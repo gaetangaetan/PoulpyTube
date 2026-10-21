@@ -1,6 +1,5 @@
-#define VERSION 73 // numéro de version pour m'y retrouver pendant le développement
-#define VERSION_DATE "2026-04-23" // date « logique » de la version (affichage série ; la date du dashboard = compilation, voir VERSION_TIMESTAMP)
-#define VERSION_TIMESTAMP __DATE__ " " __TIME__  // Timestamp de compilation
+#include "build_version.h"       // VERSION + VERSION_INT (scripts/update_version.py)
+#define VERSION_TIMESTAMP __DATE__ " " __TIME__  // debug série uniquement
 #define BUTTON_PRESENT false
 
 // ========== SYSTÈME DE DÉBOGAGE ==========
@@ -66,8 +65,13 @@ Mode = 7 : "grésillement lumineux" : // 2 couleur unie ou par groupe
 // 8 vitesse changement de pattern (pas encore utilisé ici) 
 // 9 10 11 rgb grp0 | 12 13 14 rgb grp1 | etc.
 Mode = 8, 9, 10, 11 : presets de flickering (pas de paramètres)
- 
-Mode = 8 à 254: tirets | 4 canaux : 1 longueur, 2 couleur, 3 intensité, 4 vitesse
+Mode = 12 : segment RGB local (ch2-4 RGB, ch5 longueur, ch6 décalage)
+Mode = 17 : blanc variable (ch2 température, ch3 luminosité)
+Modes 20-29 : animations locales (scanner, chase, strobe, breathe, rainbow, sparkle, wipe…)
+Modes 30-49 : séquences inter-groupes (chase, comet, knight rider, wave, ripple…)
+Mode = 53 : segment local par groupe (pos, len, couleur index via canaux groupe)
+Modes 60, 61, 63 : hybrides séquence + paramètres par groupe
+Modes 64-72 : strip virtuelle cross-barres (ch5 = leds/groupe, ch6 = sens)
 Mode = 255 : affiche le numéro de groupe (des pixels espacés permettent de facilement voir le numéro du groupe, 7 pixels allumés= groupe 7)
 
 remarque : le 04122024, j'ai réécrit tous les modes sauf les modes 0, 6 et 255 avec l'aide de chatgpt
@@ -78,9 +82,15 @@ Le numéro de groupe est enregistré en EEPROM
 */
 
 
-#define DATA_PIN D2        // pin de contrôle du strip led
+#if defined(ESP8266)
+#define POULPY_LED_PIN D2  // pin de contrôle du strip led
 #define BUTTONPIN D1       // on définit le pin positif du bouton (il s'agit d'un pullup, quand le bouton est relevé, la valeur du pin est HIGH, quand le bouton est enfoncé, le contact au GND est fait et la valeur est donc LOW)
 #define BUTTONGROUNDPIN D5 // pour faciliter le montage, on utilise une pin pour fournir le GND au bouton
+#else
+#define POULPY_LED_PIN 16  // GPIO déjà câblé sur ce module (WLED l'utilisait)
+#define BUTTONPIN 0
+#define BUTTONGROUNDPIN 4
+#endif
 
 #define MAXLEDLENGTH 300  // Taille MAX des buffers (capacité maximale, ne pas changer!)
                           // Le nombre de LEDs effectivement utilisé est dans ledCount (chargé depuis EEPROM)
@@ -122,6 +132,9 @@ Le numéro de groupe est enregistré en EEPROM
 #define SET_CHANNEL_CMD        0xE3  // Définir le canal WiFi actif
 #define SET_LED_COUNT_CMD      0xE4  // Définir le nombre de LEDs
 #define START_STATS_CMD        0xE5  // Démarrer envoi stats périodiques
+#define SET_DMX_ADDRESS_CMD    0xED  // Adresse DMX persistée (1–505)
+#define SET_MULTIFIXTURE_CMD   0xEE  // RAM only : 0 = mono, 1 = slot 8 ch
+#define GET_DMX_ADDRESS_CMD    0xEF  // Réponse 0xD7 : adresse EEPROM + flag runtime
 #define STOP_STATS_CMD         0xE6  // Arrêter envoi stats périodiques
 #define SET_BRIGHTNESS_CMD     0xE7  // Définir luminosité max
 #define RESTART_SINGLE_CMD     0xE8  // Redémarrer ce récepteur spécifique
@@ -129,6 +142,8 @@ Le numéro de groupe est enregistré en EEPROM
 #define IDENTIFY_CMD           0xEA  // Faire clignoter pour identifier
 #define PING_CMD               0xEB  // Test de connectivité
 #define SET_STATS_SERIAL_CMD   0xEC  // Activer/désactiver stats sur serial
+#define RESET_ENERGY_CMD       0xF0  // Remet à zéro l'énergie cumulée (EEPROM)
+#define SET_POWER_LIMIT_CMD    0xF1  // Limite de puissance en watts, 0 = aucune (data[10..11] LE)
 
 // Réponses (récepteur -> émetteur)
 #define RESPONSE_INFO_CMD      0xD0  // Réponse avec toutes les infos
@@ -138,19 +153,26 @@ Le numéro de groupe est enregistré en EEPROM
 #define RESPONSE_ACK_CMD       0xD4  // Accusé de réception simple
 #define RESPONSE_ERROR_CMD     0xD5  // Erreur
 #define RESPONSE_PONG_CMD      0xD6  // Réponse au ping
+#define RESPONSE_DMX_ADDRESS_CMD 0xD7  // Adresse + flag multifixure
 // ========== FIN NOUVELLES COMMANDES ==========
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#if defined(ESP8266)
 #include <ESP8266WiFi.h>
-
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
-
-// user_interface.h pour les fonctions WiFi bas niveau
 extern "C" {
   #include "user_interface.h"
 }
+#define POULPY_HTTPUPDATE ESPhttpUpdate
+#else
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include "esp32_compat.h"
+#define POULPY_HTTPUPDATE httpUpdate
+#endif
 
 
 // #include <DNSServer.h>
@@ -160,25 +182,37 @@ extern "C" {
 #define APNAME "mrLEDTUBE19"
 
 
-#define EEPROM_SIZE 128  // Augmenté pour stocker les paramètres OTA (structure ~100 bytes)
+#define EEPROM_SIZE 256  // Étendu pour stocker l'URL OTA
 
-// Paramètres OTA stockés directement en EEPROM (approche simple)
-// Layout EEPROM à partir de l'adresse EEPROM_ADDR_OTA_PARAMS (12) :
-// +0: pending (1 byte)
-// +1: ssidLength (1 byte) 
-// +2: passwordLength (1 byte)
-// +3 à +34: SSID (32 bytes max)
-// +35 à +97: Password (63 bytes max)
+// Layout EEPROM :
+//   0-3   : EEPROM_ADDR_SETUP_ADDRESS
+//   4-7   : EEPROM_ADDR_SETUP_MODE
+//   8     : EEPROM_ADDR_SETUP_TUBE
+//   12    : EEPROM_ADDR_OTA_PARAMS
+//             +0 pending, +1 ssidLen, +2 passLen
+//             +3..+34 SSID (32 bytes), +35..+97 password (63 bytes)
+//   98    : EEPROM_ADDR_DETECTED_CHANNEL
+//   100   : EEPROM_ADDR_LED_COUNT (2 bytes)
+//   102   : EEPROM_ADDR_OTA_URL — urlLength (1 byte) + url (max 140 chars)
 
-// Adresses EEPROM
-#define EEPROM_ADDR_SETUP_ADDRESS   0
-#define EEPROM_ADDR_SETUP_MODE      4  
-#define EEPROM_ADDR_SETUP_TUBE      8
-#define EEPROM_ADDR_OTA_PARAMS      12
+#define EEPROM_ADDR_SETUP_ADDRESS    0
+#define EEPROM_ADDR_SETUP_MODE       4
+#define EEPROM_ADDR_SETUP_TUBE       8
+#define EEPROM_ADDR_OTA_PARAMS       12
 #define EEPROM_ADDR_DETECTED_CHANNEL 98
-#define EEPROM_ADDR_LED_COUNT       100  // uint16_t (2 bytes)
+#define EEPROM_ADDR_MULTIFIX_INIT    99   // 0xA7 = adresse multifixure initialisée
+#define EEPROM_ADDR_LED_COUNT        100  // uint16_t (2 bytes)
+#define STREAM_KIND                  5
+#define STREAM_MULTIFIXTURE          0x01
+#define STREAM_MULTIFIXTURE_MARK     6
+#define STREAM_MULTIFIXTURE_MAGIC    0xA5
+#define MULTIFIX_INIT_MAGIC          0xA7
+#define EEPROM_ADDR_OTA_URL          102  // urlLength (1 byte) + url (max 140 chars)
 
 #include <FastLED.h>
+#include "led_modes.h"
+#include "power_budget.h"
+#include "multifixure.h"
 
 CRGB leds[MAXLEDLENGTH]; // objet représentant le ledstrip
 CRGB flickerLeds[MAXLEDLENGTH]; // objet représentant la mémoire du ledstrip pendant l'effet flicker
@@ -188,13 +222,16 @@ uint8_t ledsTemp[MAXLEDLENGTH][3]; // tableau représentant les valeurs r g b de
 OneButton button1(BUTTONPIN, true); // Setup a new OneButton on pin BUTTONPIN.
 
 //#include <ESP8266WiFiMulti.h>
-#include <espnow.h> 
+#if defined(ESP8266)
+#include <espnow.h>
+#endif 
 // library permettant d'utiliser le protocole de communication sans fil propriétaire d'Espressif (faire "comme du wifi" sans passer par toutes les couches du wifi)
 // exemple : https://randomnerdtutorials.com/esp-now-esp32-arduino-ide/
 
 int setupAddress = 1;
 int setupMode = 1;
 int setupTubeNumber = 1;
+bool multifixtureEnabled = false;
 
 double lastOffset = 0;
 
@@ -302,6 +339,7 @@ uint8_t detectedChannel = 0;        // Canal détecté (0 = non détecté)
 bool channelDetected = false;       // Flag de détection pendant le scan
 uint8_t senderMacFromScan[6];      // MAC de l'émetteur détecté pendant le scan
 unsigned long lastPacketTime = 0;   // Timestamp du dernier paquet reçu
+static unsigned long lastMultifixureMs = 0;
 bool isScanning = false;           // Flag pour éviter les scans multiples simultanés
 
 // ========== VARIABLES POUR COMMANDES AVANCÉES ==========
@@ -359,7 +397,7 @@ void displayRemoteConfigPattern() {
     }
     // État éteint : rien à faire (FastLED.clear() déjà appelé)
     
-    FastLED.show();
+    poulpyShow();
   }
 }
 
@@ -418,7 +456,7 @@ void updateDemoAnimation(void) {
 
   case DEMO_ANIM_FLASH_HOLD:
     fill_solid(leds, ledCount, demoAnimFlashColor);
-    FastLED.show();
+    poulpyShow();
     if (dt >= DEMO_FLASH_HOLD_MS) {
       demoAnimPhase = DEMO_ANIM_FADE_OUT;
       demoAnimPhaseStartMs = now;
@@ -433,7 +471,7 @@ void updateDemoAnimation(void) {
     uint8_t gg = (uint8_t)((float)demoAnimFlashColor.g * (1.0f - t));
     uint8_t bb = (uint8_t)((float)demoAnimFlashColor.b * (1.0f - t));
     fill_solid(leds, ledCount, CRGB(rr, gg, bb));
-    FastLED.show();
+    poulpyShow();
     if (t >= 1.0f) {
       demoAnimPhase = DEMO_ANIM_BLACK_HOLD;
       demoAnimPhaseStartMs = now;
@@ -443,7 +481,7 @@ void updateDemoAnimation(void) {
 
   case DEMO_ANIM_BLACK_HOLD:
     fill_solid(leds, ledCount, CRGB::Black);
-    FastLED.show();
+    poulpyShow();
     if (dt >= DEMO_BLACK_HOLD_MS) {
       getNormalRgbFromDmx(&demoRecoverR, &demoRecoverG, &demoRecoverB);
       demoAnimPhase = DEMO_ANIM_FADE_IN;
@@ -459,7 +497,7 @@ void updateDemoAnimation(void) {
     uint8_t gg = (uint8_t)((float)demoRecoverG * t);
     uint8_t bb = (uint8_t)((float)demoRecoverB * t);
     fill_solid(leds, ledCount, CRGB(rr, gg, bb));
-    FastLED.show();
+    poulpyShow();
     if (t >= 1.0f)
       demoAnimPhase = DEMO_ANIM_IDLE;
     break;
@@ -474,64 +512,65 @@ void updateDemoAnimation(void) {
 // ========== FONCTIONNALITÉ OTA (MISE À JOUR FIRMWARE) ==========
 
 // Fonctions utilitaires pour la gestion des paramètres OTA en EEPROM (approche simple)
-void saveOTAParams(const char* ssid, const char* password) {
-  uint8_t ssidLen = strlen(ssid);
-  uint8_t passLen = strlen(password);
-  
-  // Sauvegarde directe octet par octet
-  EEPROM.write(EEPROM_ADDR_OTA_PARAMS, 1);      // pending = 1
+void saveOTAParams(const char* ssid, const char* password, const char* firmwareUrl = nullptr) {
+  uint8_t ssidLen = ssid ? strlen(ssid) : 0;
+  uint8_t passLen = password ? strlen(password) : 0;
+  if (ssidLen > 32) ssidLen = 32;
+  if (passLen > 63) passLen = 63;
+
+  EEPROM.write(EEPROM_ADDR_OTA_PARAMS,     1);        // pending = 1
   EEPROM.write(EEPROM_ADDR_OTA_PARAMS + 1, ssidLen);
   EEPROM.write(EEPROM_ADDR_OTA_PARAMS + 2, passLen);
-  
-  // Sauvegarde SSID
-  for (int i = 0; i < ssidLen && i < 32; i++) {
+  for (int i = 0; i < ssidLen; i++)
     EEPROM.write(EEPROM_ADDR_OTA_PARAMS + 3 + i, ssid[i]);
-  }
-  
-  // Sauvegarde Password
-  for (int i = 0; i < passLen && i < 63; i++) {
+  for (int i = 0; i < passLen; i++)
     EEPROM.write(EEPROM_ADDR_OTA_PARAMS + 35 + i, password[i]);
-  }
-  
+
+  // Sauvegarder l'URL dans la zone dédiée
+  uint8_t urlLen = (firmwareUrl && strlen(firmwareUrl) > 0) ? strlen(firmwareUrl) : 0;
+  if (urlLen > 140) urlLen = 140;
+  EEPROM.write(EEPROM_ADDR_OTA_URL, urlLen);
+  for (int i = 0; i < urlLen; i++)
+    EEPROM.write(EEPROM_ADDR_OTA_URL + 1 + i, firmwareUrl[i]);
+
   EEPROM.commit();
-  Serial.println("Paramètres OTA sauvegardés en EEPROM");
+  Serial.printf("Paramètres OTA sauvegardés (SSID=%s, URL=%s)\n",
+                ssid ? ssid : "", firmwareUrl ? firmwareUrl : "(hardcodée)");
 }
 
-bool loadOTAParams(char* ssid, char* password) {
-  //Serial.println("DEBUG: loadOTAParams() appelée");
-  
+bool loadOTAParams(char* ssid, char* password, char* firmwareUrl = nullptr) {
   uint8_t pending = EEPROM.read(EEPROM_ADDR_OTA_PARAMS);
-  //Serial.printf("DEBUG: pending = %d\n", pending);
-  
-  if (pending != 1) {
-    //Serial.println("DEBUG: OTA pas en attente (pending != 1)");
-    return false; // Pas d'OTA en attente
-  }
-  
+  if (pending != 1) return false;
+
   uint8_t ssidLen = EEPROM.read(EEPROM_ADDR_OTA_PARAMS + 1);
   uint8_t passLen = EEPROM.read(EEPROM_ADDR_OTA_PARAMS + 2);
-  
-  //Serial.printf("DEBUG: SSID length = %d, Password length = %d\n", ssidLen, passLen);
-  
-  // Lecture SSID
-  for (int i = 0; i < ssidLen && i < 32; i++) {
+  if (ssidLen > 32) ssidLen = 32;
+  if (passLen > 63) passLen = 63;
+
+  for (int i = 0; i < ssidLen; i++)
     ssid[i] = EEPROM.read(EEPROM_ADDR_OTA_PARAMS + 3 + i);
-  }
   ssid[ssidLen] = '\0';
-  
-  // Lecture Password
-  for (int i = 0; i < passLen && i < 63; i++) {
+  for (int i = 0; i < passLen; i++)
     password[i] = EEPROM.read(EEPROM_ADDR_OTA_PARAMS + 35 + i);
-  }
   password[passLen] = '\0';
-  
-  //Serial.printf("DEBUG: SSID lu = '%s'\n", ssid);
-  
+
+  // Charger l'URL si le paramètre est fourni
+  if (firmwareUrl) {
+    uint8_t urlLen = EEPROM.read(EEPROM_ADDR_OTA_URL);
+    if (urlLen > 0 && urlLen <= 140) {
+      for (int i = 0; i < urlLen; i++)
+        firmwareUrl[i] = EEPROM.read(EEPROM_ADDR_OTA_URL + 1 + i);
+      firmwareUrl[urlLen] = '\0';
+    } else {
+      firmwareUrl[0] = '\0';  // Pas d'URL → utiliser la valeur par défaut
+    }
+  }
   return true;
 }
 
 void clearOTAParams() {
   EEPROM.write(EEPROM_ADDR_OTA_PARAMS, 0);  // pending = 0
+  EEPROM.write(EEPROM_ADDR_OTA_URL, 0);     // effacer aussi la longueur de l'URL
   EEPROM.commit();
   Serial.println("Paramètres OTA effacés de l'EEPROM");
 }
@@ -564,52 +603,45 @@ void clearDetectedChannel() {
   DEBUG_PRINTLN("Canal détecté effacé de l'EEPROM");
 }
 // ========== FIN FONCTIONS GESTION EEPROM CANAL ==========
-// Fonction simplifiée pour programmer une mise à jour OTA
-// Sauvegarde les paramètres en EEPROM et redémarre
-// Paramètres extraits du paquet ESP-NOW selon le format :
-// data[4] = longueur SSID, data[5...] = SSID, data[X] = longueur password, data[X+1...] = password
-void handleOTAUpdate(uint8_t* otaData) {
+// Programme une mise à jour OTA : extrait SSID/pass depuis data[] et
+// l'URL optionnelle depuis dmxvalues[] (si dmxvalues != nullptr).
+// Sauvegarde en EEPROM et redémarre.
+void handleOTAUpdate(uint8_t* otaData, uint8_t* otaDmxValues) {
   Serial.println("========== PROGRAMMATION MISE À JOUR OTA ==========");
-  
-  // Extraction des informations WiFi depuis le paquet
+
   uint8_t ssidLength = otaData[4];
-  
   if (ssidLength == 0 || ssidLength > 32) {
     Serial.printf("ERREUR: Longueur SSID invalide (%d)\n", ssidLength);
     return;
   }
-  
-  // Extraction du SSID
-  char ssid[33]; // 32 caractères max + null terminator
+
+  char ssid[33];
   memcpy(ssid, &otaData[5], ssidLength);
   ssid[ssidLength] = '\0';
-  
-  // Extraction de la longueur du password
+
   uint8_t passwordLength = otaData[5 + ssidLength];
-  
-  if (passwordLength > 63) { // WPA2 limite à 63 caractères
+  if (passwordLength > 63) {
     Serial.printf("ERREUR: Longueur password invalide (%d)\n", passwordLength);
     return;
   }
-  
-  // Extraction du password
-  char password[64]; // 63 caractères max + null terminator
-  if (passwordLength > 0) {
+  char password[64];
+  if (passwordLength > 0)
     memcpy(password, &otaData[6 + ssidLength], passwordLength);
-  }
   password[passwordLength] = '\0';
-  
+
+  // URL optionnelle transmise dans le champ dmxvalues du paquet ESP-NOW
+  char firmwareUrl[141] = {0};
+  if (otaDmxValues && otaDmxValues[0] != 0) {
+    strncpy(firmwareUrl, (char*)otaDmxValues, 140);
+    firmwareUrl[140] = '\0';
+    Serial.printf("URL OTA reçue: %s\n", firmwareUrl);
+  }
+
   Serial.printf("OTA programmée avec WiFi: %s\n", ssid);
-  
-  // Sauvegarde des paramètres et redémarrage
-  saveOTAParams(ssid, password);
+  saveOTAParams(ssid, password, firmwareUrl[0] ? firmwareUrl : nullptr);
   Serial.println("Redémarrage pour mise à jour OTA...");
-  
-  // Délai plus long et flush du Serial avant redémarrage
   Serial.flush();
   delay(1000);
-  
-  // Redémarrage propre
   ESP.restart();
 }
 
@@ -688,7 +720,7 @@ uint8_t scanForChannel() {
     for (int i = 0; i < numLedsToShow; i++) {
       leds[i] = CRGB::Blue;
     }
-    FastLED.show();
+    poulpyShow();
     
     // Configurer le canal WiFi AVANT d'initialiser ESP-NOW
     wifi_set_channel(channel);
@@ -771,10 +803,10 @@ uint8_t scanForChannel() {
       for (int j = 0; j < min(10, (int)ledCount); j++) {
         leds[j] = CRGB::Green;
       }
-      FastLED.show();
+      poulpyShow();
       delay(100);
       FastLED.clear();
-      FastLED.show();
+      poulpyShow();
       delay(100);
     }
     
@@ -835,22 +867,22 @@ void executeOTAUpdate() {
   
   char ssid[33];
   char password[64];
-  
-  if (!loadOTAParams(ssid, password)) {
-    //Serial.println("DEBUG: Pas d'OTA en attente");
-    return; // Pas d'OTA en attente
+  char savedUrl[141];
+
+  if (!loadOTAParams(ssid, password, savedUrl)) {
+    return;
   }
-  
-  //Serial.println("DEBUG: OTA en attente trouvée !");
-  
+
   Serial.println("========== EXÉCUTION MISE À JOUR OTA ==========");
   Serial.printf("Connexion au WiFi: %s\n", ssid);
-  
-  // IMPORTANT: Effacer les paramètres OTA AVANT le téléchargement
-  // pour éviter la boucle infinie en cas de succès
+
   clearOTAParams();
 
-  const char *firmwareURL = "http://poulpylights.gaetanstreel.com/receiver/firmware.bin";
+  // URL versionnée reçue de l'émetteur, ou URL legacy hardcodée en fallback
+  const char *firmwareURL = (savedUrl[0] != '\0')
+    ? savedUrl
+    : "http://poulpylights.gaetanstreel.com/receiver/firmware.bin";
+  Serial.printf("URL firmware: %s\n", firmwareURL);
   
   // Clignotement bleu pendant la connexion WiFi
   FastLED.clear();
@@ -858,10 +890,10 @@ void executeOTAUpdate() {
     for (int j = 0; j < min(10, MAXLEDLENGTH); j++) {
       leds[j] = CRGB::Blue;
     }
-    FastLED.show();
+    poulpyShow();
     delay(200);
     FastLED.clear();
-    FastLED.show();
+    poulpyShow();
     delay(200);
   }
   
@@ -893,7 +925,7 @@ void executeOTAUpdate() {
     for (int j = 0; j < min(wifiTimeout, (int)ledCount); j++) {
       leds[j] = CRGB::Blue;
     }
-    FastLED.show();
+    poulpyShow();
   }
   
   if (WiFi.status() != WL_CONNECTED) {
@@ -905,10 +937,10 @@ void executeOTAUpdate() {
       for (int j = 0; j < min(5, (int)ledCount); j++) {
         leds[j] = CRGB::Red;
       }
-      FastLED.show();
+      poulpyShow();
       delay(100);
       FastLED.clear();
-      FastLED.show();
+      poulpyShow();
       delay(100);
     }
     
@@ -930,19 +962,21 @@ void executeOTAUpdate() {
   for (int j = 0; j < ledCount; j++) {
     leds[j] = CRGB::Green;
   }
-  FastLED.show();
+  poulpyShow();
   
   WiFiClient client;
   client.setTimeout(60000);
 
-  ESPhttpUpdate.setClientTimeout(60000);
-  t_httpUpdate_return result = ESPhttpUpdate.update(client, firmwareURL);
+#if defined(ESP8266)
+  POULPY_HTTPUPDATE.setClientTimeout(60000);
+#endif
+  t_httpUpdate_return result = POULPY_HTTPUPDATE.update(client, firmwareURL);
   
   switch (result) {
     case HTTP_UPDATE_FAILED:
       Serial.printf("ERREUR: Mise à jour échouée (%d): %s\n", 
-                    ESPhttpUpdate.getLastError(), 
-                    ESPhttpUpdate.getLastErrorString().c_str());
+                    POULPY_HTTPUPDATE.getLastError(), 
+                    POULPY_HTTPUPDATE.getLastErrorString().c_str());
       
       // Indication visuelle : clignotement rouge rapide
       for (int i = 0; i < 20; i++) {
@@ -950,10 +984,10 @@ void executeOTAUpdate() {
         for (int j = 0; j < ledCount; j++) {
           leds[j] = CRGB::Red;
         }
-        FastLED.show();
+        poulpyShow();
         delay(50);
         FastLED.clear();
-        FastLED.show();
+        poulpyShow();
         delay(50);
       }
       break;
@@ -966,7 +1000,7 @@ void executeOTAUpdate() {
       for (int j = 0; j < ledCount; j++) {
         leds[j] = CRGB::Orange;
       }
-      FastLED.show();
+      poulpyShow();
       delay(2000);
       break;
       
@@ -978,7 +1012,7 @@ void executeOTAUpdate() {
       for (int j = 0; j < ledCount; j++) {
         leds[j] = CRGB::White;
       }
-      FastLED.show();
+      poulpyShow();
       delay(1000);
       
       // Paramètres déjà effacés, redémarrage automatique par OTA
@@ -1033,7 +1067,7 @@ void sendMACResponse() {
   
   // Informations supplémentaires utiles pour l'émetteur
   responsePacket.data[10] = setupTubeNumber; // Numéro de groupe actuel
-  responsePacket.data[11] = VERSION;         // Version du firmware
+  responsePacket.data[11] = VERSION_INT;     // Version du firmware (entier 1-byte, legacy)
   
   // Affichage de l'adresse MAC pour debug
   Serial.print("Adresse MAC: ");
@@ -1041,7 +1075,7 @@ void sendMACResponse() {
     Serial.printf("%02X", macAddress[i]);
     if (i < 5) Serial.print(":");
   }
-  Serial.printf(" | Groupe: %d | Version: %d\n", setupTubeNumber, VERSION);
+  Serial.printf(" | Groupe: %d | Version: %s\n", setupTubeNumber, VERSION);
   
   // Envoyer directement à l'émetteur si on a son adresse MAC
   uint8_t* targetAddress;
@@ -1141,7 +1175,7 @@ void sendInfoResponse() {
   
   // data[4-9] : MAC (déjà rempli par prepareResponsePacket)
   responsePacket.data[10] = setupTubeNumber;           // Groupe actuel
-  responsePacket.data[11] = VERSION;                   // Version firmware (legacy, pour compatibilité)
+  responsePacket.data[11] = VERSION_INT;                // Version firmware (legacy, entier 1-byte)
   responsePacket.data[12] = detectedChannel;           // Canal WiFi actuel
   
   // Nombre de LEDs (uint16_t en little-endian) - utilise la variable globale ledCount
@@ -1178,19 +1212,47 @@ void sendInfoResponse() {
   // Stats serial enabled
   responsePacket.data[27] = statsSerialEnabled ? 1 : 0;
   
-  // Timestamp du firmware (max 24 caractères) - data[28] à data[51]
-  // Format: "Nov 27 2025 14:32:15"
-  const char* timestamp = VERSION_TIMESTAMP;
+  // Version firmware format YYMMDD-HHMM (max 24 chars), transmise au dashboard
+  const char* timestamp = VERSION;
   uint8_t timestampLen = strlen(timestamp);
   if (timestampLen > 24) timestampLen = 24;
   responsePacket.data[28] = timestampLen;  // Longueur du timestamp
   memcpy(&responsePacket.data[29], timestamp, timestampLen);
+
+  // Adresse EEPROM (uint16 LE) + flag runtime — extra[43..45] côté Lite
+  responsePacket.data[53] = setupAddress & 0xFF;
+  responsePacket.data[54] = (setupAddress >> 8) & 0xFF;
+  responsePacket.data[55] = multifixtureEnabled ? 1 : 0;
+
+  // Énergie cumulée en mWh (uint32 LE) et puissance instantanée en mW (uint32 LE)
+  uint32_t energy = powerBudgetEnergyMwh();
+  responsePacket.data[56] = energy & 0xFF;
+  responsePacket.data[57] = (energy >> 8) & 0xFF;
+  responsePacket.data[58] = (energy >> 16) & 0xFF;
+  responsePacket.data[59] = (energy >> 24) & 0xFF;
+  uint32_t instantMw = powerBudgetInstantMw();
+  responsePacket.data[60] = instantMw & 0xFF;
+  responsePacket.data[61] = (instantMw >> 8) & 0xFF;
+  responsePacket.data[62] = (instantMw >> 16) & 0xFF;
+  responsePacket.data[63] = (instantMw >> 24) & 0xFF;
+  uint16_t limitW = powerBudgetLimitW();
+  responsePacket.data[64] = limitW & 0xFF;
+  responsePacket.data[65] = (limitW >> 8) & 0xFF;
   
   sendResponsePacket(&responsePacket);
   
   Serial.printf("Info envoyée | Groupe:%d | Canal:%d | LEDs:%d | RSSI:%d | FW:%s\n",
                 setupTubeNumber, detectedChannel, ledCount, lastRSSI, VERSION_TIMESTAMP);
   Serial.println("========== FIN ENVOI INFO RESPONSE ==========");
+}
+
+void sendDmxAddressResponse() {
+  struct_dmx_packet responsePacket;
+  prepareResponsePacket(&responsePacket, RESPONSE_DMX_ADDRESS_CMD);
+  responsePacket.data[10] = setupAddress & 0xFF;
+  responsePacket.data[11] = (setupAddress >> 8) & 0xFF;
+  responsePacket.data[12] = multifixtureEnabled ? 1 : 0;
+  sendResponsePacket(&responsePacket);
 }
 
 // Réponse CHANNEL : canal WiFi actuel
@@ -1351,7 +1413,7 @@ void performChannelScanWithStats() {
     // Feedback visuel
     leds[0] = CRGB::Blue;
     leds[ch] = (packetCount > 0) ? CRGB::Green : CRGB::Red;
-    FastLED.show();
+    poulpyShow();
   }
   
   // Restaurer le canal original ou utiliser le meilleur
@@ -1384,7 +1446,7 @@ void performChannelScanWithStats() {
   } else {
     leds[0] = CRGB::Red;
   }
-  FastLED.show();
+  poulpyShow();
   delay(1000);
   
   Serial.printf("Scan terminé | Meilleur canal: %d avec %d paquets\n", scanBestChannel, maxPackets);
@@ -1402,7 +1464,7 @@ void handleIdentifyMode() {
     identifyActive = false;
     // Éteindre les LEDs
     fill_solid(leds, ledCount, CRGB::Black);
-    FastLED.show();
+    poulpyShow();
     Serial.println("Fin mode identification");
     return;
   }
@@ -1414,7 +1476,7 @@ void handleIdentifyMode() {
   if (millis() - lastBlink > 200) {
     blinkOn = !blinkOn;
     fill_solid(leds, ledCount, blinkOn ? CRGB::White : CRGB::Black);
-    FastLED.show();
+    poulpyShow();
     lastBlink = millis();
   }
 }
@@ -1472,6 +1534,40 @@ void handleNewCommand(uint8_t cmd, uint8_t* data, uint8_t len) {
       }
       break;
       
+    case SET_DMX_ADDRESS_CMD:
+      if (len >= 12) {
+        uint16_t addr = data[10] | (data[11] << 8);
+        if (addr >= 1 && addr <= (512 - MULTIFIXTURE_SLOT + 1)) {
+          setupAddress = addr;
+          EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS, setupAddress & 0xFF);
+          EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS + 1, (setupAddress >> 8) & 0xFF);
+          EEPROM.write(EEPROM_ADDR_MULTIFIX_INIT, MULTIFIX_INIT_MAGIC);
+          EEPROM.commit();
+          Serial.printf("Adresse DMX multifixure: %d\n", setupAddress);
+          sendAckResponse(SET_DMX_ADDRESS_CMD, 0);
+        } else {
+          sendAckResponse(SET_DMX_ADDRESS_CMD, 2);
+        }
+      }
+      break;
+
+    case SET_MULTIFIXTURE_CMD:
+      if (len >= 11) {
+        bool want = data[10] != 0;
+        if (want != multifixtureEnabled)
+          multifixtureEnabled = want;
+        if (multifixtureEnabled)
+          lastMultifixureMs = millis();
+        sendAckResponse(SET_MULTIFIXTURE_CMD, 0);
+      } else {
+        sendAckResponse(SET_MULTIFIXTURE_CMD, 1);
+      }
+      break;
+
+    case GET_DMX_ADDRESS_CMD:
+      sendDmxAddressResponse();
+      break;
+
     case SET_LED_COUNT_CMD:
       // data[10-11] contient le nouveau nombre de LEDs (uint16_t en little-endian)
       if (len >= 12) {
@@ -1544,6 +1640,25 @@ void handleNewCommand(uint8_t cmd, uint8_t* data, uint8_t len) {
       
     case PING_CMD:
       sendPongResponse();
+      break;
+
+    case RESET_ENERGY_CMD:
+      powerBudgetReset();
+      sendAckResponse(RESET_ENERGY_CMD, 0);
+      break;
+
+    case SET_POWER_LIMIT_CMD:
+      if (len >= 12) {
+        uint16_t watts = data[10] | (data[11] << 8);
+        if (watts <= 200) {
+          powerBudgetSetLimitW(watts);
+          sendAckResponse(SET_POWER_LIMIT_CMD, 0);
+        } else {
+          sendAckResponse(SET_POWER_LIMIT_CMD, 2);
+        }
+      } else {
+        sendAckResponse(SET_POWER_LIMIT_CMD, 1);
+      }
       break;
       
     case SET_STATS_SERIAL_CMD:
@@ -1649,7 +1764,7 @@ void handleRemoteSetup() {
   }
   
   // Afficher les LEDs
-  FastLED.show();
+  poulpyShow();
 }
 
 // ========== FIN FONCTIONNALITÉ SETUP À DISTANCE ==========
@@ -1711,7 +1826,7 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
       {
         statsOTAPackets++;
         Serial.println("Commande OTA détectée !");
-        handleOTAUpdate(incomingDMXPacket.data);
+        handleOTAUpdate(incomingDMXPacket.data, incomingDMXPacket.dmxvalues);
         return; // Sortir immédiatement après traitement OTA
       }
       
@@ -1789,7 +1904,7 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
       uint8_t cmdCode = incomingDMXPacket.data[3];
       
       // Vérifier si c'est une des nouvelles commandes (plage 0xE0-0xEF)
-      if (cmdCode >= 0xE0 && cmdCode <= 0xEF) {
+      if ((cmdCode >= 0xE0 && cmdCode <= 0xEF) || cmdCode == RESET_ENERGY_CMD || cmdCode == SET_POWER_LIMIT_CMD) {
         // Stocker l'adresse MAC de l'émetteur pour pouvoir lui répondre
         memcpy(senderMacAddress, mac, 6);
         hasSenderAddress = true;
@@ -1826,6 +1941,13 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
           {
             dmxChannels[(packetNumber * 128) + i] = incomingDMXPacket.dmxvalues[i];
           }
+          const bool wantMulti =
+              incomingDMXPacket.data[STREAM_KIND] == STREAM_MULTIFIXTURE
+              && incomingDMXPacket.data[STREAM_MULTIFIXTURE_MARK] == STREAM_MULTIFIXTURE_MAGIC;
+          if (wantMulti != multifixtureEnabled)
+            multifixtureEnabled = wantMulti;
+          if (multifixtureEnabled)
+            lastMultifixureMs = millis();
         }
       }
     } else {
@@ -1959,7 +2081,7 @@ void flickering(uint8_t dmx1, uint8_t dmx2, uint8_t dmx3, uint8_t dmx4, uint8_t 
     } else {
       FastLED.clear();
     }
-    FastLED.show();
+    poulpyShow();
 
     // On attend la fin du petit flicker
     while (millis() - lastFlicker < dureeFlicker) {
@@ -1981,28 +2103,38 @@ void flickering(uint8_t dmx1, uint8_t dmx2, uint8_t dmx3, uint8_t dmx4, uint8_t 
 // Il suffit d'ajouter un bloc "CASE"
 void DMX2LEDSTRIP()
 {
+  if (multifixtureEnabled) {
+    if (millis() - lastMultifixureMs > MULTIFIXTURE_TIMEOUT_MS) {
+      multifixtureEnabled = false;
+      FastLED.clear();
+      poulpyShow();
+      return;
+    }
+    if (renderMultifixture(dmxChannels, setupAddress, ledCount))
+      return;
+    FastLED.clear();
+    poulpyShow();
+    return;
+  }
 
   FastLED.clear();
 
   setupMode = dmxChannels[0]; // le canal 1 précise le mode des ledstrips
 
-  double ledDimmer;
-  int onLength;
-  int offLength;
-  double fxSpeed;
-  double speedFactor;
+  if (renderExtendedLedMode((uint8_t)setupMode)) {
+    poulpyShow();
+    delay(1);
+    return;
+  }
+
   int ir = 3 * setupTubeNumber + 1;
   int ig = 3 * setupTubeNumber + 2;
   int ib = 3 * setupTubeNumber + 3;
 
-  int segmentLength;
-
-  Color rgbcolor;
-
-// Offset utilisé par plusieurs modes
-if (setupMode != 1) {
+// Offset utilisé par les modes rainbow (1, 2, 24)
+if (setupMode != 1 && setupMode != 2 && setupMode != 24) {
     hueOffset = 0;
-} 
+}
 
 
   switch (setupMode)
@@ -2040,7 +2172,7 @@ case 1: // Mode Rainbow défilant avec contrôle du décalage, de la densité de
     hueOffset += map(rainbowSpeed, 0, 255, -5, 5); // Contrôle de la vitesse et de la direction (-5 à 5)
 
     // Afficher les LEDs
-    FastLED.show();
+    poulpyShow();
     break;
 }
 
@@ -2065,7 +2197,7 @@ case 2: // Mode Rainbow avec intensité ajustable
     hueOffset += map(rainbowSpeed, 0, 255, -5, 5); // Contrôle de la vitesse et de la direction (-5 à 5)
 
     // Afficher les LEDs
-    FastLED.show();
+    poulpyShow();
     break;
 }
 
@@ -2128,7 +2260,7 @@ case 3: // Mode scintillement aléatoire
     }
 
     // Afficher les LEDs
-    FastLED.show();
+    poulpyShow();
     break;
 }
 
@@ -2196,7 +2328,7 @@ case 4: // Mode scintillement progressif
     }
 
     // Afficher les LEDs
-    FastLED.show();
+    poulpyShow();
     break;
 }
 
@@ -2268,7 +2400,7 @@ case 5: // Mode scintillement progressif par groupes
     }
 
     // Afficher les LEDs
-    FastLED.show();
+    poulpyShow();
     break;
 }
 
@@ -2365,71 +2497,13 @@ break;
     break;
 
  
-  default: // Si aucun mode n'est explicitement défini pour la valeur dmxChannels[0] actuelle, on tombe sur le mode par défaut : segment de longueur, couleur, intensité, vitesse de déplacement contrôlés par les adresses 1 2 3 4
-    
-    segmentLength = setupMode; // Longueur du segment définie par le canal 1
-    rgbcolor = convertToColor(dmxChannels[1]); // Couleur définie par le canal 2 
-
-    ledDimmer = (double(dmxChannels[2]) / 255.0); // Intensité définie par le canal 3
-    
-
-    ir = rgbcolor.r * ledDimmer; // Rouge avec atténuation
-    ig = rgbcolor.g * ledDimmer; // Vert avec atténuation
-    ib = rgbcolor.b * ledDimmer; // Bleu avec atténuation
-
-    onLength = segmentLength;    // Longueur des segments allumés
-    offLength = segmentLength;   // Longueur des segments éteints
-
-    // Calcul de la vitesse symétrique
-    speedFactor = (double(dmxChannels[3]) - 127.5) / 127.5; // Plage de -1.0 à 1.0
-    fxSpeed = speedFactor * 1.0; // Ajustement pour une vitesse maximale raisonnable
-
-    // Calcul du décalage par groupe
-    double groupOffset = setupTubeNumber * segmentLength / 2.0; // Décalage basé sur le numéro de groupe
-
-    // Mise à jour continue de l'offset (ajout de fxSpeed pour chaque boucle)
-    lastOffset += fxSpeed;
-    if (lastOffset >= (onLength + offLength)) {
-        lastOffset -= (onLength + offLength); // Limiter l'offset pour éviter de dépasser la plage
-    } else if (lastOffset < 0) {
-        lastOffset += (onLength + offLength); // Gérer les valeurs négatives
-    }
-
-    for (int j = 0; j < ledCount; j++) {
-        double fadeFactor = 1.0; // Par défaut, pas d'atténuation
-
-        // Calcul de la position continue avec offset, incluant le décalage par groupe
-        double positionWithOffset = fmod(j + lastOffset + groupOffset, onLength + offLength);
-
-        // Vérifier si on est dans un segment allumé
-        if (positionWithOffset < onLength) {
-            double positionInSegment = positionWithOffset;
-
-            // Appliquer le fondu (fade) au début et à la fin du segment
-            if (positionInSegment < onLength * DEGRADE_FACTOR) {
-                fadeFactor = positionInSegment / (onLength * DEGRADE_FACTOR); // Début progressif
-            } else if (positionInSegment > onLength * (1.0 - DEGRADE_FACTOR)) {
-                fadeFactor = (onLength - positionInSegment) / (onLength * DEGRADE_FACTOR); // Fin décroissante
-            } else {
-                fadeFactor = 1.0; // Pleine intensité au centre
-            }
-
-            // Appliquer la couleur avec l'atténuation calculée
-            leds[j].r = ir * fadeFactor;
-            leds[j].g = ig * fadeFactor;
-            leds[j].b = ib * fadeFactor;
-        } else {
-            // LEDs dans le segment éteint
-            leds[j].r = 0;
-            leds[j].g = 0;
-            leds[j].b = 0;
-        }
-    }
+  default:
+    // Mode inconnu : blackout (FastLED.clear déjà appelé)
     break;
 
   }
 
-  FastLED.show();
+  poulpyShow();
   delay(1);
 }
 
@@ -2451,7 +2525,8 @@ void longPressStart1() // un clic long, permet de passer de RUNNING à SETUP et 
 
   if (etat == SETUP) // avant de sortir du SETUP, on enregistre les données en mémoire persistante
   {
-    EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS, setupAddress);
+    EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS, setupAddress & 0xFF);
+    EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS + 1, (setupAddress >> 8) & 0xFF);
     EEPROM.write(EEPROM_ADDR_SETUP_MODE, setupMode);
     EEPROM.write(EEPROM_ADDR_SETUP_TUBE, setupTubeNumber);
     Serial.print("Commit =  ");
@@ -2467,15 +2542,14 @@ void setup()
   randomHueOffset = rand()%256;
   Serial.begin(115200);
   Serial.println("");
-  Serial.print("Version ");
-  Serial.print(VERSION);
-  Serial.print(" | ");
-  Serial.println(VERSION_DATE);
+  Serial.printf("Version %s (int=%d, compiled=%s)\n", VERSION, VERSION_INT, VERSION_TIMESTAMP);
 
+#if defined(ESP8266)
   pinMode(BUTTONGROUNDPIN, OUTPUT); 
   digitalWrite(BUTTONGROUNDPIN, LOW); // on utilise BUTTONGROUNDPIN comme GND pour le bouton 1
+#endif
 
-  FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, MAXLEDLENGTH); // Création d'un objet représentant le ledstrip pour FastLED // GRB ordering is typical
+  FastLED.addLeds<WS2812, POULPY_LED_PIN, GRB>(leds, MAXLEDLENGTH); // Création d'un objet représentant le ledstrip pour FastLED // GRB ordering is typical
 
   // Initialiser EEPROM avant tout
   EEPROM.begin(EEPROM_SIZE);
@@ -2485,7 +2559,11 @@ void setup()
   
   // Si on arrive ici, pas d'OTA en attente, continuer normalement
   WiFi.disconnect();
+#if defined(ESP8266)
   ESP.eraseConfig(); // !!! COMMANDES IMPORTANTES !!! ESP_NOW peut parfois ne pas fonctionner si on n'exécute pas pas ces deux commandes. Je ne suis pas sûr que ce soit écrit dans la doc. C'est peut-être même un petit bug. Bref, il faut le savoir :)
+#else
+  WiFi.persistent(false);
+#endif
 
   // Wifi STA Mode
   WiFi.mode(WIFI_STA);
@@ -2581,7 +2659,7 @@ void setup()
   button1.attachLongPressStart(longPressStart1);
 
   // EEPROM déjà initialisé plus haut
-  setupAddress = EEPROM.read(EEPROM_ADDR_SETUP_ADDRESS);
+  setupAddress = EEPROM.read(EEPROM_ADDR_SETUP_ADDRESS) | (EEPROM.read(EEPROM_ADDR_SETUP_ADDRESS + 1) << 8);
   setupMode = EEPROM.read(EEPROM_ADDR_SETUP_MODE);
   setupTubeNumber = EEPROM.read(EEPROM_ADDR_SETUP_TUBE);
   
@@ -2594,13 +2672,25 @@ void setup()
     ledCount = 144;  // Valeur par défaut (ruban standard)
     Serial.printf("Nombre de LEDs par défaut: %d\n", ledCount);
   }
+
+  powerBudgetLoad();
   
-  if ((setupAddress < 1) || (setupAddress > 512))
+  if ((setupTubeNumber < 0) || (setupTubeNumber > 32))
+    setupTubeNumber = 0;
+  if (EEPROM.read(EEPROM_ADDR_MULTIFIX_INIT) != MULTIFIX_INIT_MAGIC) {
+    int defAddr = 1 + MULTIFIXTURE_SLOT * setupTubeNumber;
+    if (defAddr > 512 - MULTIFIXTURE_SLOT + 1) defAddr = 1;
+    setupAddress = defAddr;
+    EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS, setupAddress & 0xFF);
+    EEPROM.write(EEPROM_ADDR_SETUP_ADDRESS + 1, (setupAddress >> 8) & 0xFF);
+    EEPROM.write(EEPROM_ADDR_MULTIFIX_INIT, MULTIFIX_INIT_MAGIC);
+    EEPROM.commit();
+    Serial.printf("Adresse multifixure par défaut: %d (tube %d)\n", setupAddress, setupTubeNumber);
+  }
+  if ((setupAddress < 1) || (setupAddress > 512 - MULTIFIXTURE_SLOT + 1))
     setupAddress = 1;
   if ((setupMode < 1) || (setupMode > 255))
     setupMode = 1;
-  if ((setupTubeNumber < 0) || (setupTubeNumber > 32))
-    setupTubeNumber = 0;
 
   // EEPROM.end();
 
@@ -2706,10 +2796,10 @@ void loop()
         leds[j].b = 0;
       }
     }
-    FastLED.show(); // les cinq lignes suivantes produisent un clignottement (200ms)
+    poulpyShow(); // les cinq lignes suivantes produisent un clignottement (200ms)
     delay(100);
     FastLED.clear();
-    FastLED.show();
+    poulpyShow();
     delay(100);
   }
 }
