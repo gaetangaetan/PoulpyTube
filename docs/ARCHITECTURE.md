@@ -55,35 +55,43 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 ### Qui est passerelle
 
 - Le rôle se pose depuis Pollux (page Lampes) ou depuis l'application web d'une passerelle existante. Il est enregistré en EEPROM.
-- **Secours automatique** : une barre qui n'entend aucune passerelle pendant 30 s devient passerelle.
+- **Secours automatique** : une barre qui n'entend aucune passerelle pendant 8 s (plus 0 à 7,5 s selon sa MAC) devient passerelle. Mesuré : ~12 s après la disparition de la passerelle.
+- **Passation** : désigner une autre barre depuis l'application. L'ancienne cesse aussitôt de se dire désignée, puis redémarre ; la nouvelle devient passerelle sans redémarrer. Mesuré : 7 à 8 s. Une passerelle désignée qui revient reprend la main en ~2 s.
 - **Une seule passerelle** : chaque passerelle émet une balise (§ 6). Une passerelle qui entend la balise d'une passerelle à **plus petite MAC** redevient une simple barre. Plusieurs barres allumées sans passerelle se départagent ainsi toutes seules, en quelques secondes.
 - Une passerelle désignée explicitement ne se retire que face à une autre passerelle désignée explicitement (la règle de la plus petite MAC s'applique alors aussi). Une passerelle de secours se retire toujours devant une passerelle désignée.
 
 ### Wi-Fi
 
-- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application).
-- **Secours** : si la connexion échoue (pas de réglage, ou 20 s sans succès), la passerelle ouvre son propre Wi-Fi `PoulpyTube-xxxx`, ouvert (sans mot de passe). Elle retente la maison toutes les 2 minutes tant que personne n'est connecté à son Wi-Fi.
+- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application, ou repris de la dernière mise à jour OTA envoyée par Pollux si la barre n'en a pas).
+- **Partagé** : la passerelle donne ce Wi-Fi à toutes les barres (`WIFI_CONFIG`, seulement à celles dont l'empreinte dans `TUBE_STATUS` diffère). Chacune le garde en EEPROM : la barre qui devient passerelle rejoint la maison toute seule.
+- **Secours** : si la maison n'est pas joignable (pas de réglage, introuvable, autre canal, ou 20 s sans succès), la passerelle ouvre le Wi-Fi `PoulpyTube`, ouvert. Même nom pour toutes les barres : le téléphone ne voit qu'un réseau. Elle retente la maison toutes les 2 minutes ; connectée, elle coupe ce point d'accès.
 - **Adresse** : `poulpytube.local`.
-  - Sur son propre Wi-Fi : la passerelle répond elle-même aux noms (DNS local). Toute adresse mène à la page, qui s'ouvre souvent toute seule à la connexion.
-  - Sur la maison : mDNS. Fonctionne sur iPhone et la plupart des Android récents ; l'IP est affichée en secours dans l'application et sur le port série.
-- **Canal radio** : ESP-NOW doit être sur le canal du Wi-Fi. Sur la maison, le canal est celui du routeur : la passerelle le diffuse aux barres (`SET_CHANNEL`, comme le hop de PoulpyLink). Sur son propre Wi-Fi, elle garde le canal enregistré.
+  - Sur son propre Wi-Fi : la passerelle répond elle-même aux noms (DNS local), à `192.168.4.1`. Toute adresse mène à la page, qui s'ouvre souvent toute seule à la connexion.
+  - Sur la maison : mDNS. L'IP change avec la passerelle : la page ouverte se reconnecte et se recharge toute seule.
+- **Canal radio** : une barre n'a qu'une radio. La passerelle ne rejoint la maison **que si le routeur est sur le canal des barres** ; elle ne change jamais de canal d'elle-même (les barres quitteraient PoulpyNode / PoulpyLink). L'application montre le canal du routeur et propose de passer toutes les barres dessus ; PoulpyNode doit suivre.
 
 ### Ce qu'elle fait
 
-- Garde la table **groupe → look** (et les looks posés barre par barre) et les **20 scènes**, en flash.
+- Garde la table **groupe → look** (et les looks posés barre par barre) et les **20 scènes**, en flash (LittleFS).
+- Diffuse en continu le fichier des scènes (`SCENE_CHUNK`, un morceau de 128 octets toutes les 150 ms, ~10 s par tour). Chaque barre en garde une copie : une nouvelle passerelle a déjà les scènes. Une nouvelle passerelle apprend les looks en cours des statuts des barres.
 - Sur une demande du téléphone : envoie la commande `LOOK` tout de suite, répétée 3 fois à ~30 ms d'écart.
 - **Rediffusion** toutes les 1,5 s : balise + état complet. Une barre allumée en retard ou qui a raté un paquet se met à jour en moins de 2 s.
 - Garde la liste des barres entendues (MAC, groupe, adresse, LEDs, firmware, batterie), mise à jour par les réponses aux scans.
 
 ## 6. Protocole radio
 
-Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, commandes `blockNumber = 255`, code en `data[3]`, MAC cible en `data[4..9]`, charge utile dès `data[10]`). Toutes les commandes existantes restent. Trois commandes nouvelles :
+Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, commandes `blockNumber = 255`, code en `data[3]`, MAC cible en `data[4..9]`, charge utile dès `data[10]`). Toutes les commandes existantes restent. Six commandes nouvelles :
 
 | Code | Nom | Charge utile (`data[10…]`) |
 |---|---|---|
 | `0xC0` | `LOOK` | masque de groupes (2 octets, `0xFFFF` = toutes) ou MAC cible en `data[4..9]` ; look (10 octets) ; fondu en ms (2 octets) ; numéro de version de l'état (2 octets) ; drapeau « mémoriser » |
 | `0xC1` | `GATEWAY_BEACON` | horloge de la passerelle en ms (4 octets) ; version de l'état (2 octets) ; canal ; drapeaux (désignée / secours) |
 | `0xC2` | `SET_ROLE` | MAC cible ; rôle (0 = barre, 1 = passerelle) ; délai de retour du live en s |
+| `0xC3` | `TUBE_STATUS` | barre → passerelle : groupe, adresse, LEDs, limite W, mWh, source, drapeaux, look autonome, firmware ; `data[50]` empreinte du Wi-Fi |
+| `0xC4` | `WIFI_CONFIG` | MAC cible ; `dmxvalues[0..32]` SSID, `[33..97]` mot de passe |
+| `0xC5` | `SCENE_CHUNK` | numéro du morceau ; taille du fichier (2 octets) ; `dmxvalues` = 128 octets du fichier des scènes |
+
+Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 
 - Une barre ignore un `LOOK` dont la version est déjà appliquée : les répétitions et rediffusions ne coûtent rien.
 - Les barres calent leur horloge d'animation sur la balise : les looks qui traversent plusieurs barres restent synchrones à quelques ms.
@@ -234,6 +242,6 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 1. Relecture de ce document.
 2. Maquette cliquable de l'application web, testée sur téléphone.
 3. Nettoyage du firmware à comportement égal (§ 10). Testé sur deux Wemos, publié. **Fait** : 261029-0228 (file de commandes, redémarrages différés, une image toutes les 10 ms ; la structure EEPROM avec CRC passe à l'étape 4).
-4. Mode autonome, passerelle, application web. Testé, publié.
+4. Mode autonome, passerelle, application web. **Fait** : 261029-1255, testé par OTA sur six barres (passation, secours, retour de la désignée, copie des scènes, Wi-Fi partagé, PoulpyNode voit toujours les barres sans MAC fantôme). Écart au plan : le Wi-Fi `PoulpyTube` n'existe que si la maison n'est pas joignable ; la passerelle ne change jamais de canal d'elle-même.
 5. midiPoulpy adapté, retrait des anciens modes.
 6. Ajustements Pollux / PoulpyNode (rôle passerelle sur la page Lampes, adresse 0).
