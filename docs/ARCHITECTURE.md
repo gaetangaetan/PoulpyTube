@@ -70,7 +70,7 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 
 ### Ce qu'elle fait
 
-- Garde la table **groupe → look** (et les looks posés barre par barre), en EEPROM.
+- Garde la table **groupe → look** (et les looks posés barre par barre) et les **20 scènes**, en flash.
 - Sur une demande du téléphone : envoie la commande `LOOK` tout de suite, répétée 3 fois à ~30 ms d'écart.
 - **Rediffusion** toutes les 1,5 s : balise + état complet. Une barre allumée en retard ou qui a raté un paquet se met à jour en moins de 2 s.
 - Garde la liste des barres entendues (MAC, groupe, adresse, LEDs, firmware, batterie), mise à jour par les réponses aux scans.
@@ -99,13 +99,28 @@ Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, command
 - Compilée dans le firmware (compressée) : un seul `.bin`, l'OTA par catalogue ne change pas.
 - HTML + JavaScript simples, sans framework, quelques dizaines de Ko.
 
-### Onglets (proposition, à valider sur maquette)
+### Onglets (maquette validée : `web/index.html`)
 
-1. **Jouer** : les groupes en grandes tuiles (couleur du look actuel). Toucher un groupe ouvre un panneau : couleurs rapides, look, vitesse, largeur. Une tuile « Toutes ».
-2. **Barres** : liste des barres trouvées. Toucher une barre : clignoter, groupe, adresse, LEDs, limite en watts, batterie, look individuel.
-3. **Réglages** : Wi-Fi de la maison, nom, délai de retour du live, canal, passerelle, mise à jour du firmware des barres.
+1. **Jouer** : les groupes en grandes tuiles avec aperçu animé, plus une tuile « Toutes ». Toucher un groupe ouvre un panneau : 12 couleurs, teinte, intensité, look, vitesse, largeur.
+2. **Scènes** : 20 emplacements. Toucher = rappeler (ou enregistrer si vide), appui long = renommer, fondu, remplacer, effacer.
+3. **Barres** : liste des barres trouvées. Toucher une barre : clignoter, groupe, adresse (Groupe / Fixe), LEDs, limite en watts, batterie, look individuel, en faire la passerelle.
+4. **Réglages** : Wi-Fi de la maison, passerelle, délai de retour du live, canal, sauvegarde, mise à jour du firmware des barres.
 
-Plus tard, si utile : des scènes complètes (« groupe 1 bleu, groupe 2 chase rouge ») rappelées d'un geste.
+### Scènes
+
+- Une scène = nom, fondu au rappel, le look de chaque groupe, et les looks des barres réglées seules (par MAC).
+- **20 scènes, stockées sur la passerelle** (fichier en flash, quelques Ko). Tous les téléphones voient les mêmes ; rien n'est gardé dans le téléphone.
+- Rappel : la passerelle envoie un `LOOK` par groupe puis par barre réglée seule, avec le fondu de la scène. Elle applique la même règle que pour un look : poser un groupe efface les looks individuels de ses barres.
+- La passerelle mémorise la dernière scène rappelée et la rejoue au démarrage (c'est le look autonome des barres).
+
+### Sauvegarde (gaetanstreel.com)
+
+- **Une seule sauvegarde** : `https://poulpylights.gaetanstreel.com/poulpytube/api/backup.php` (source : `server/api/backup.php`, envoi : `python server/deploy.py`). Le serveur garde aussi les 30 versions précédentes.
+- C'est le **téléphone** qui parle au serveur, pas la passerelle (un ESP8266 en HTTPS est lourd). Il faut donc que le téléphone ait internet, en pratique sur le Wi-Fi de la maison.
+- Contenu (`format: poulpytube.backup`, `version: 1`) : les scènes, les réglages des barres par MAC (groupe, adresse, LEDs, limite), le délai de retour du live.
+- Récupérer remplace les scènes ; les réglages des barres ne sont repris que si on coche la case.
+- Exporter / importer un fichier JSON depuis le téléphone, sans internet.
+- Pas de mot de passe (comme l'API de scènes du Lab midiPoulpy) : quelqu'un qui connaît l'adresse peut écraser la sauvegarde, d'où les 30 versions gardées.
 
 ### API (passerelle)
 
@@ -119,6 +134,13 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 | POST | `/api/scan` | relance un scan |
 | POST | `/api/tube` | `{ "mac": "…", "group" \| "address" \| "leds" \| "wattLimit" \| "identify" }` |
 | POST | `/api/settings` | Wi-Fi, délai de retour, canal, nom |
+| GET | `/api/scenes` | les scènes enregistrées |
+| POST | `/api/scenes` | `{ "slot", "name", "fadeMs" }` : enregistre l'état actuel |
+| POST | `/api/scenes/meta` | renomme ou change le fondu |
+| POST | `/api/scenes/recall` | `{ "slot" }` |
+| POST | `/api/scenes/delete` | `{ "slot" }` |
+| GET | `/api/backup` | tout (format `poulpytube.backup`) |
+| POST | `/api/backup` | `{ "backup", "tubes": true \| false }` : restaure |
 
 Même API envisageable plus tard sur PoulpyNode.
 
