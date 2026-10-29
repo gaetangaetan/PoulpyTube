@@ -189,6 +189,12 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 - Configuration = **une structure** en EEPROM, avec version et CRC. Lecture de l'ancienne disposition au premier démarrage (migration), puis plus jamais.
 - Version du firmware : ne change que quand on publie, pas à chaque compilation.
 
+### Publier une version
+
+1. `POULPY_RELEASE=1` puis `pio run -e d1_mini` (PowerShell : `$env:POULPY_RELEASE="1"; pio run -e d1_mini`). Sans la variable, `build_version.h` et `data/version.txt` ne bougent pas.
+2. Tester ce binaire. Les barres sont fermées : passer par l'OTA du PoulpyNode (`POST /api/tubes/ota` avec `mac`, `ssid`, `pass`, `url`) en servant le fichier depuis le PC, et vérifier qu'une deuxième OTA passe encore.
+3. Copier `.pio/build/d1_mini/firmware.bin` et `data/version.txt` dans `poulpylights_v3.0/mrLEDTUBE-receiver` (mêmes chemins), puis `python scripts/publish_release.py --receiver-only --no-build --note "…"` depuis `poulpylights_v3.0`.
+
 ### Modules
 
 | Module | Rôle |
@@ -227,7 +233,7 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 
 1. Relecture de ce document.
 2. Maquette cliquable de l'application web, testée sur téléphone.
-3. Nettoyage du firmware à comportement égal (§ 10). Testé sur deux Wemos, publié.
+3. Nettoyage du firmware à comportement égal (§ 10). Testé sur deux Wemos, publié. **Fait** : 261029-0228 (file de commandes, redémarrages différés, une image toutes les 10 ms ; la structure EEPROM avec CRC passe à l'étape 4).
 4. Mode autonome, passerelle, application web. Testé, publié.
 5. midiPoulpy adapté, retrait des anciens modes.
 6. Ajustements Pollux / PoulpyNode (rôle passerelle sur la page Lampes, adresse 0).
