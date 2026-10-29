@@ -1,6 +1,6 @@
 # PoulpyTube — architecture cible
 
-> Statut : **proposition à relire**. Rien n'est codé. Une fois validé, ce document devient la référence du firmware et des émetteurs (PoulpyNode, PoulpyLink, midiPoulpy, Pollux).
+> Statut : **validé le 2026-10-29** (adresse 0, canal 10 déclencheur, pas de mot de passe). midiPoulpy reporté : pas assez de retour d'usage pour figer ses effets. Rien n'est codé. Une fois validé, ce document devient la référence du firmware et des émetteurs (PoulpyNode, PoulpyLink, midiPoulpy, Pollux).
 
 ## 1. En une phrase
 
@@ -62,7 +62,7 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 ### Wi-Fi
 
 - **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application).
-- **Secours** : si la connexion échoue (pas de réglage, ou 20 s sans succès), la passerelle ouvre son propre Wi-Fi `PoulpyTube-xxxx` (mot de passe optionnel). Elle retente la maison toutes les 2 minutes tant que personne n'est connecté à son Wi-Fi.
+- **Secours** : si la connexion échoue (pas de réglage, ou 20 s sans succès), la passerelle ouvre son propre Wi-Fi `PoulpyTube-xxxx`, ouvert (sans mot de passe). Elle retente la maison toutes les 2 minutes tant que personne n'est connecté à son Wi-Fi.
 - **Adresse** : `poulpytube.local`.
   - Sur son propre Wi-Fi : la passerelle répond elle-même aux noms (DNS local). Toute adresse mène à la page, qui s'ouvre souvent toute seule à la connexion.
   - Sur la maison : mDNS. Fonctionne sur iPhone et la plupart des Android récents ; l'IP est affichée en secours dans l'application et sur le port série.
@@ -153,8 +153,8 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 
 ### Transition
 
-- Les anciens modes restent dans le firmware des barres jusqu'à ce que midiPoulpy soit adapté, puis sont retirés.
-- **À récupérer** : les 12 effets actuellement enregistrés dans le midiPoulpy (mémoire de la carte), pour savoir quels anciens modes sont vraiment utilisés.
+- Reportée : midiPoulpy a servi pour un concert, l'usage n'est pas assez établi pour figer ses effets.
+- Les anciens modes restent dans le firmware des barres (module `legacy`) jusqu'à ce que midiPoulpy soit adapté, puis sont retirés.
 
 ## 10. Organisation du firmware
 
@@ -193,12 +193,12 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 | Live → autonome | délai de retour (4 s) + fondu 1 s |
 | Autonome → live | immédiat |
 
-## 12. Points ouverts
+## 12. Décisions et points ouverts
 
-- Le canal 10 « déclencheur » : à valider.
-- L'adresse 0 « suit le groupe » : à valider.
-- Liste des nouveaux looks : après l'inventaire des effets midiPoulpy.
-- Mot de passe sur le Wi-Fi de secours et sur l'application : par défaut ouvert ou non ?
+- Canal 10 « déclencheur » : **validé**.
+- Adresse 0 « suit le groupe » : **validée**.
+- Wi-Fi de secours et application : **sans mot de passe**.
+- Nouveaux looks : la liste se fera à l'usage. midiPoulpy n'est pas prioritaire ; ses effets ne seront pas inventoriés pour l'instant, et les anciens modes restent dans le firmware tant qu'il n'est pas adapté.
 - L'OTA n'est pas authentifiée (inchangé pour l'instant).
 
 ## 13. Étapes
