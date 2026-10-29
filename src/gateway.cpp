@@ -786,8 +786,9 @@ void handleScenesGet() {
     if (!readScene(slot, s)) continue;
     JsonDocument doc;
     sceneToJson(doc.to<JsonObject>(), slot, s);
-    String out = first ? "" : ",";
-    serializeJson(doc, out);
+    String out;
+    serializeJson(doc, out);  // remplace le contenu de out : la virgule part à part
+    if (!first) server.sendContent(",");
     server.sendContent(out);
     first = false;
   }
