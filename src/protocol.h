@@ -91,6 +91,10 @@ typedef struct struct_dmx_packet {
 #define WIFI_CONFIG_CMD    0xC4
 #define WIFI_CONFIG_PASS   33
 
+// SCENE_CHUNK (passerelle → toutes, en continu) : data[10] numéro du morceau de 128 octets,
+// [11..12] taille du fichier de scènes ; dmxvalues = le morceau. Chaque barre garde une copie.
+#define SCENE_CHUNK_CMD    0xC5
+
 // Tube → émetteur
 #define RESPONSE_MAC_CMD         0xFC
 #define RESPONSE_INFO_CMD        0xD0
@@ -111,7 +115,7 @@ inline bool isCommandCode(uint8_t c) {
       || c == ENTER_REMOTE_SETUP_CMD || c == EXIT_REMOTE_SETUP_CMD
       || c == SET_GROUP_NUMBER_CMD || c == PANIC_RESTART_CMD
       || c == ANIMATION_TRIGGER_CMD
-      || (c >= LOOK_CMD && c <= WIFI_CONFIG_CMD)
+      || (c >= LOOK_CMD && c <= SCENE_CHUNK_CMD)
       || (c >= 0xE0 && c <= 0xEF) || c == RESET_ENERGY_CMD || c == SET_POWER_LIMIT_CMD;
 }
 

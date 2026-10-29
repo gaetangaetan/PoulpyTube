@@ -475,6 +475,10 @@ static void processCommand(const uint8_t* mac, const struct_dmx_packet& p) {
       gatewayOnWifiConfig(d, p.dmxvalues);
       return;
 
+    case SCENE_CHUNK_CMD:
+      gatewayOnSceneChunk(d, p.dmxvalues);
+      return;
+
     case RESPONSE_MAC_CMD:      // réponse d'un autre tube
     case ANIMATION_TRIGGER_CMD:  // plus utilisé
       return;

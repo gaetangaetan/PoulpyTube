@@ -16,5 +16,6 @@ void gatewayOnBeacon(const uint8_t* data);
 void gatewayOnSetRole(const uint8_t* data);
 void gatewayOnStatus(const uint8_t* data);
 void gatewayOnWifiConfig(const uint8_t* data, const uint8_t* dmxvalues);
+void gatewayOnSceneChunk(const uint8_t* data, const uint8_t* dmxvalues);
 
 #endif

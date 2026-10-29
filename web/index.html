@@ -137,6 +137,7 @@ input[type=text],input[type=password]{width:100%;height:46px;border-radius:12px;
   <header>
     <h1>PoulpyTube</h1>
     <span id="pDemo" class="pill demo" hidden>Démo</span>
+    <span id="lost" class="pill live" hidden>Passerelle… reconnexion</span>
     <span id="pMode" class="pill auto">Autonome</span>
   </header>
   <main>
@@ -495,8 +496,9 @@ function openTube(t){
     kv("Batterie",h("span",{},t.batt==null?"secteur":t.batt+" %")),
     h("div",{style:"display:flex;gap:8px"},
       h("button",{class:"big",onclick:()=>openLook({mac:t.mac,tube:t})},"Look de cette barre"),
-      t.gw?null:h("button",{class:"big",onclick:()=>{S.tubes.forEach(x=>x.gw=x===t);S.gateway={mac:t.mac,designated:true};
-        api("POST","/api/tube",{mac:t.mac,role:"gateway"}).catch(()=>{});toast("Nouvelle passerelle : "+tubeName(t));closeSheet()}},"Passerelle")),
+      t.gw?null:h("button",{class:"big",onclick:()=>{switchingFrom=S.gateway.mac;
+        api("POST","/api/tube",{mac:t.mac,role:"gateway"}).catch(()=>{});closeSheet();
+        lost=true;$("#lost").hidden=false;toast("Nouvelle passerelle : "+tubeName(t)+" · la page revient toute seule")}},"Passerelle")),
     h("div",{class:"note"},`${t.mac} · firmware ${t.fw}${t.gw?" · passerelle":""}`));
 }
 
@@ -553,13 +555,24 @@ $("#btnScan").onclick=async()=>{toast("Recherche…");try{await api("POST","/api
 let tt=0;function toast(m){const e=$("#toast");e.textContent=m;e.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("on"),1800)}
 
 // Les barres et la passerelle bougent sans la page : relire toutes les 4 s (pas pendant un panneau ouvert).
+// Passerelle injoignable (changement de passerelle, redémarrage) : réessayer chaque seconde,
+// puis recharger la page quand elle répond — la nouvelle passerelle a son propre état.
+let lost=false,switchingFrom=null;
 async function poll(){
-  if(DEMO||document.hidden||$("#sheet").classList.contains("on"))return;
-  try{const st=await api("GET","/api/state");const tb=await api("GET","/api/tubes");
+  if(DEMO||document.hidden)return;
+  if(!lost&&$("#sheet").classList.contains("on"))return;
+  try{
+    const ctl=new AbortController();setTimeout(()=>ctl.abort(),2500);
+    const r=await fetch("/api/state",{signal:ctl.signal,cache:"no-store"});if(!r.ok)throw 0;
+    const st=await r.json();
+    if(switchingFrom&&st.gateway?.mac===switchingFrom)return;  // l'ancienne répond encore
+    if(lost||(S.gateway?.mac&&st.gateway?.mac!==S.gateway.mac)){location.reload();return}
+    const tb=await api("GET","/api/tubes");
     if($("#sheet").classList.contains("on"))return;
-    Object.assign(S,st);S.tubes=tb||[];render()}catch{}
+    Object.assign(S,st);S.tubes=tb||[];render();
+  }catch{if(!lost){lost=true;$("#lost").hidden=false}}
 }
-load();requestAnimationFrame(drawPreviews);setInterval(poll,4000);
+load();requestAnimationFrame(drawPreviews);setInterval(()=>{if(lost)poll()},1000);setInterval(()=>{if(!lost)poll()},4000);
 </script>
 </body>
 </html>

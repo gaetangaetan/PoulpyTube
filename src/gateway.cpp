@@ -464,14 +464,44 @@ bool readScene(uint8_t slot, Scene& s) {
   return true;
 }
 
+const uint16_t SCENES_SIZE = SCENE_COUNT * sizeof(Scene);
+const uint16_t CHUNK_SIZE = 128;
+const uint32_t SCENE_CHUNK_MS = 150;  // le fichier entier repasse toutes les ~10 s
+uint8_t chunkCursor = 0;
+uint32_t lastChunkMs = 0;
+
+void ensureScenesFile() {
+  if (LittleFS.exists(SCENES_FILE)) return;
+  File f = LittleFS.open(SCENES_FILE, "w");
+  Scene empty;
+  memset(&empty, 0, sizeof(empty));
+  for (uint8_t i = 0; i < SCENE_COUNT; i++) f.write((const uint8_t*)&empty, sizeof(empty));
+  f.close();
+}
+
+// Passerelle : un morceau du fichier de scènes à la fois, en boucle.
+void pumpSceneChunk(uint32_t now) {
+  if (now - lastChunkMs < SCENE_CHUNK_MS) return;
+  lastChunkMs = now;
+  File f = LittleFS.open(SCENES_FILE, "r");
+  if (!f) return;
+  const uint8_t chunks = (SCENES_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;
+  if (chunkCursor >= chunks) chunkCursor = 0;
+  struct_dmx_packet p;
+  header(p, SCENE_CHUNK_CMD, BROADCAST);
+  const uint16_t off = chunkCursor * CHUNK_SIZE;
+  f.seek(off);
+  f.read(p.dmxvalues, min((uint16_t)(SCENES_SIZE - off), CHUNK_SIZE));
+  f.close();
+  p.data[10] = chunkCursor;
+  put16(&p.data[11], SCENES_SIZE);
+  tubeBroadcast(p);
+  chunkCursor++;
+}
+
 void writeScene(uint8_t slot, const Scene& s) {
-  if (!LittleFS.exists(SCENES_FILE)) {
-    File f = LittleFS.open(SCENES_FILE, "w");
-    Scene empty;
-    memset(&empty, 0, sizeof(empty));
-    for (uint8_t i = 0; i < SCENE_COUNT; i++) f.write((const uint8_t*)&empty, sizeof(empty));
-    f.close();
-  }
+  ensureScenesFile();
+  chunkCursor = slot * sizeof(Scene) / CHUNK_SIZE;  // diffuser ce qui vient de changer d'abord
   File f = LittleFS.open(SCENES_FILE, "r+");
   if (!f) return;
   f.seek((uint32_t)slot * sizeof(Scene));
@@ -705,6 +735,7 @@ void handleTube() {
     queueCmd(SET_ROLE_CMD, mac, pl, 1, 3);
     settings.role = 0;
     configSaveSettings(settings);
+    role = ROLE_FALLBACK;  // la balise ne se dit plus désignée : la nouvelle passerelle l'emporte
     saveState();
     tubeRestart(1500);  // laisser partir SET_ROLE
   }
@@ -843,11 +874,6 @@ void startMdns() {
 void startGateway(Role r) {
   role = r;
   Serial.printf("Passerelle (%s)\n", r == ROLE_DESIGNATED ? "désignée" : "secours");
-#if defined(ESP8266)
-  LittleFS.begin();
-#else
-  LittleFS.begin(true);
-#endif
   loadState();
 
   WiFi.persistent(false);
@@ -968,6 +994,12 @@ void wifiLoop(uint32_t now) {
 bool gatewayActive() { return role != ROLE_TUBE; }
 
 void gatewayBegin() {
+  // Toutes les barres : la copie des scènes y vit aussi.
+#if defined(ESP8266)
+  LittleFS.begin();
+#else
+  LittleFS.begin(true);
+#endif
   lastBeaconMs = millis();
   fallbackAfterMs = FALLBACK_MS + (myMac[5] % 16) * 500;  // évite que toutes partent ensemble
   nextStatusMs = millis() + 1000 + (myMac[5] % 32) * 50;
@@ -1033,10 +1065,11 @@ void gatewayOnSetRole(const uint8_t* d) {
   if (settings.role == r && (r == 1) == (role == ROLE_DESIGNATED)) return;
   settings.role = r;
   configSaveSettings(settings);
-  if (r == 1 && role == ROLE_FALLBACK) {
-    role = ROLE_DESIGNATED;
+  if (r == 1) {
+    if (role == ROLE_TUBE) startGateway(ROLE_DESIGNATED);  // sans redémarrer : plus rapide
+    else role = ROLE_DESIGNATED;
   } else {
-    tubeRestart(300);  // démarrer proprement dans le nouveau rôle
+    tubeRestart(300);
   }
 }
 
@@ -1062,6 +1095,24 @@ void gatewayOnStatus(const uint8_t* d) {
     r->wifiSentMs = now;
     sendWifiConfig(r->mac);
   }
+}
+
+// Barre : copie des scènes de la passerelle, écrite seulement là où elle diffère (usure flash).
+void gatewayOnSceneChunk(const uint8_t* d, const uint8_t* v) {
+  if (role != ROLE_TUBE || get16(&d[11]) != SCENES_SIZE) return;
+  const uint16_t off = d[10] * CHUNK_SIZE;
+  if (off >= SCENES_SIZE) return;
+  const uint16_t len = min((uint16_t)(SCENES_SIZE - off), CHUNK_SIZE);
+  ensureScenesFile();
+  File f = LittleFS.open(SCENES_FILE, "r+");
+  if (!f) return;
+  uint8_t cur[CHUNK_SIZE];
+  f.seek(off);
+  if (f.read(cur, len) != len || memcmp(cur, v, len) != 0) {
+    f.seek(off);
+    f.write(v, len);
+  }
+  f.close();
 }
 
 void gatewayOnWifiConfig(const uint8_t* d, const uint8_t* v) {
@@ -1110,6 +1161,7 @@ void gatewayLoop(unsigned long now) {
     expireRows(now);
   }
   pumpSends(now);
+  pumpSceneChunk(now);
 
   if (stateDirty && now - stateDirtyAt > SAVE_DELAY_MS) saveState();
 }
