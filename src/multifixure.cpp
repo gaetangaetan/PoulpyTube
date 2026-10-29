@@ -1,5 +1,4 @@
 #include "multifixure.h"
-#include "power_budget.h"
 #include <FastLED.h>
 #include <Arduino.h>
 
@@ -195,6 +194,5 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
     }
     }
 
-    poulpyShow();
     return true;
 }

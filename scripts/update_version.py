@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Met à jour l'identifiant de build du récepteur avant chaque compilation.
-Format : YYMMDD-HHMM (identique à l'émetteur et aux releases FTP).
+Identifiant de build du récepteur, format YYMMDD-HHMM (identique aux releases FTP).
+
+La version ne change que pour une release : POULPY_RELEASE=1 pio run.
+Un build ordinaire garde build_version.h et data/version.txt tels quels
+(sinon chaque compilation de test fabrique une « nouvelle version »).
 """
 
 import datetime
@@ -14,42 +17,44 @@ except NameError:
     PROJECT_DIR = Path(os.getcwd())
 
 VERSION_INT_FILE = PROJECT_DIR / 'scripts' / '.version_int'
-tag = datetime.datetime.now().strftime('%y%m%d-%H%M')
-
-# Incrémenter VERSION_INT (champ legacy 1-byte ESP-NOW).
-# Sans compteur local, repartir du #define déjà écrit dans build_version.h.
-version_int = 1
 header = PROJECT_DIR / 'src' / 'build_version.h'
-if VERSION_INT_FILE.exists():
-    try:
-        version_int = int(VERSION_INT_FILE.read_text().strip()) + 1
-    except ValueError:
-        version_int = 1
-elif header.exists():
-    for line in header.read_text(encoding='utf-8').splitlines():
-        if line.startswith('#define VERSION_INT '):
-            try:
-                version_int = int(line.split()[-1]) + 1
-            except ValueError:
-                version_int = 1
-            break
-VERSION_INT_FILE.write_text(str(version_int))
-
-# data/version.txt — lu par publish_release.py
 version_file = PROJECT_DIR / 'data' / 'version.txt'
-version_file.parent.mkdir(parents=True, exist_ok=True)
-version_file.write_text(tag)
 
-# src/build_version.h — inclus par main.cpp
-build_version_file = PROJECT_DIR / 'src' / 'build_version.h'
-build_version_file.write_text(
-    "// Genere automatiquement par scripts/update_version.py\n"
-    "// Ne pas modifier manuellement !\n"
-    "#ifndef BUILD_VERSION_H\n"
-    "#define BUILD_VERSION_H\n\n"
-    f'#define VERSION "{tag}"\n'
-    f'#define VERSION_INT {version_int}\n\n'
-    "#endif // BUILD_VERSION_H\n"
-)
+release = os.environ.get('POULPY_RELEASE') == '1'
 
-print(f"Version recepteur: {tag} (int={version_int})")
+if not release and header.exists():
+    print("Version recepteur inchangee (POULPY_RELEASE=1 pour une release)")
+else:
+    tag = datetime.datetime.now().strftime('%y%m%d-%H%M')
+
+    # VERSION_INT : champ legacy 1 octet ESP-NOW.
+    version_int = 1
+    if VERSION_INT_FILE.exists():
+        try:
+            version_int = int(VERSION_INT_FILE.read_text().strip()) + 1
+        except ValueError:
+            version_int = 1
+    elif header.exists():
+        for line in header.read_text(encoding='utf-8').splitlines():
+            if line.startswith('#define VERSION_INT '):
+                try:
+                    version_int = int(line.split()[-1]) + 1
+                except ValueError:
+                    version_int = 1
+                break
+    VERSION_INT_FILE.write_text(str(version_int))
+
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    version_file.write_text(tag)
+
+    header.write_text(
+        "// Genere automatiquement par scripts/update_version.py\n"
+        "// Ne pas modifier manuellement !\n"
+        "#ifndef BUILD_VERSION_H\n"
+        "#define BUILD_VERSION_H\n\n"
+        f'#define VERSION "{tag}"\n'
+        f'#define VERSION_INT {version_int}\n\n'
+        "#endif // BUILD_VERSION_H\n"
+    )
+
+    print(f"Version recepteur: {tag} (int={version_int})")
