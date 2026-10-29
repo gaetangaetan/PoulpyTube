@@ -87,9 +87,9 @@ nav button.on{color:var(--accent)}
 #scrim{position:fixed;inset:0;background:#0009;opacity:0;pointer-events:none;transition:opacity .18s}
 #scrim.on{opacity:1;pointer-events:auto}
 #sheet{position:fixed;left:0;right:0;bottom:0;max-height:88%;background:var(--panel);border-top-left-radius:18px;border-top-right-radius:18px;
-  border-top:1px solid var(--line);transform:translateY(105%);transition:transform .2s ease-out;
+  border-top:1px solid var(--line);transform:translateY(105%);transition:transform .2s ease-out,visibility 0s .2s;visibility:hidden;
   padding:10px 14px calc(14px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px}
-#sheet.on{transform:none}
+#sheet.on{transform:none;visibility:visible;transition:transform .2s ease-out}
 .sh-head{display:flex;align-items:center;gap:10px}
 .sh-head h2{flex:1;margin:0;font-size:18px}
 .sh-head .x{width:44px;height:44px;font-size:20px}
@@ -401,7 +401,7 @@ function settingRow(title,sub,onclick){
 }
 function renderSettings(){
   const box=$("#settings");box.replaceChildren(
-    settingRow("Wi-Fi",S.wifi.ap?(S.wifi.ssid?`${S.wifi.ssid} : pas connecté`:"Wi-Fi de la maison : aucun"):`${S.wifi.ssid} · ${S.wifi.ip}`,openWifi),
+    settingRow("Wi-Fi",S.wifi.ap?(S.wifi.ssid?`${S.wifi.ssid} : pas connecté`+(S.wifi.routerChannel&&S.wifi.routerChannel!==S.wifi.channel?` (canal ${S.wifi.routerChannel})`:""):"Wi-Fi de la maison : aucun"):`${S.wifi.ssid} · ${S.wifi.ip}`,openWifi),
     settingRow("Passerelle",`${tubeName({mac:S.gateway.mac})} · ${S.gateway.designated?"désignée":"secours"}`,openGateway),
     settingRow("Retour au look autonome",`${S.returnDelay} s après la fin du live`,openReturn),
     settingRow("Canal radio",`Canal ${S.wifi.channel}`,openChannel),
@@ -412,11 +412,18 @@ function renderSettings(){
 
 /* ---------- Panneau ---------- */
 function openSheet(title,...content){
-  const sh=$("#sheet");
+  const sh=$("#sheet");clearTimeout(sheetClear);
   sh.replaceChildren(h("div",{class:"grab"}),h("div",{class:"sh-head"},h("h2",{},title),h("button",{class:"x",onclick:closeSheet},"✕")),...content.filter(Boolean));
   sh.classList.add("on");$("#scrim").classList.add("on");
 }
-function closeSheet(){$("#sheet").classList.remove("on");$("#scrim").classList.remove("on");render()}
+// Un champ encore focalisé dans un panneau fermé ramène le panneau à l'écran avec le clavier.
+let sheetClear=0;
+function closeSheet(){
+  document.activeElement?.blur?.();
+  const sh=$("#sheet");sh.classList.remove("on");$("#scrim").classList.remove("on");
+  clearTimeout(sheetClear);sheetClear=setTimeout(()=>{if(!sh.classList.contains("on"))sh.replaceChildren()},250);
+  render();
+}
 $("#scrim").onclick=closeSheet;
 
 function fader(label,val,min,max,onInput,cls){
@@ -500,11 +507,15 @@ function openWifi(){
   const rc=S.wifi.routerChannel;
   openSheet("Wi-Fi",
     h("div",{class:"note"},S.wifi.ap?(S.wifi.ssid?`Pas connectée à ${S.wifi.ssid}.`:"Pas de Wi-Fi de la maison."):`Connectée à ${S.wifi.ssid} · ${S.wifi.ip}`),
-    S.wifi.ap&&rc&&rc!==S.wifi.channel?h("div",{class:"note"},`Le routeur est sur le canal ${rc}, les barres sur le canal ${S.wifi.channel}. La passerelle ne le rejoint que sur le même canal (Réglages › Canal radio).`):null,
+    S.wifi.ap&&rc&&rc!==S.wifi.channel?h("div",{class:"note"},`Le routeur est sur le canal ${rc}, les barres sur le canal ${S.wifi.channel}. Une barre n’a qu’une radio : la passerelle ne rejoint la maison que si les barres sont sur le canal du routeur.`):null,
+    S.wifi.ap&&rc&&rc!==S.wifi.channel?h("button",{class:"big",onclick:()=>{
+      if(!confirm(`Passer toutes les barres sur le canal ${rc} ? Réglez ensuite PoulpyNode / Pollux sur le même canal.`))return;
+      api("POST","/api/settings",{channel:rc}).catch(()=>{});toast("Les barres passent sur le canal "+rc);closeSheet()}},`Passer les barres sur le canal ${rc}`):null,
+    S.wifi.ssid?kv("Barres qui le connaissent",h("span",{},`${S.wifi.shared??"?"} / ${S.tubes.length}`)):null,
     ssid,pass,
     h("button",{class:"big accent",onclick:async()=>{S.wifi.ssid=ssid.value;try{await api("POST","/api/settings",{wifiSsid:ssid.value,wifiPass:pass.value})}catch{}
       toast("Enregistré · la passerelle se reconnecte");closeSheet()}},"Enregistrer"),
-    h("div",{class:"note"},`Le Wi-Fi ${S.wifi.apSsid||"PoulpyTube"} (ouvert) reste toujours allumé : le téléphone peut s’y connecter même sans la maison.`));
+    h("div",{class:"note"},"Toutes les barres gardent ce Wi-Fi : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert)."));
 }
 function openGateway(){
   openSheet("Passerelle",

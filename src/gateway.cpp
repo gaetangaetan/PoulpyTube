@@ -9,6 +9,7 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <espnow.h>
 using WebServerT = ESP8266WebServer;
 #else
 #include <ESPmDNS.h>
@@ -27,7 +28,7 @@ using WebServerT = WebServer;
 namespace {
 
 const uint32_t BEACON_MS = 1500;
-const uint32_t FALLBACK_MS = 30000;      // sans balise pendant 30 s, une barre devient passerelle
+const uint32_t FALLBACK_MS = 8000;       // sans balise pendant 8 s (+ écart par MAC), une barre devient passerelle
 const uint32_t STATUS_MS = 5000;
 const uint32_t GATEWAY_LOST_MS = 10000;  // plus de statut si la passerelle se tait
 const uint32_t TUBE_EXPIRE_MS = 20000;
@@ -81,6 +82,8 @@ struct TubeRow {
   uint8_t look[LOOK_SIZE];
   char fw[17];
   uint32_t seen;
+  uint8_t wifiSum;
+  uint32_t wifiSentMs;
 };
 TubeRow rows[MAX_TUBES];
 uint8_t rowCount = 0;
@@ -125,7 +128,12 @@ uint8_t sendCursor = 0;
 // ---------- Wi-Fi et web ----------
 WebServerT server(80);
 DNSServer dns;
-char apSsid[20];
+// Un seul nom pour toutes les barres : le téléphone ne voit qu'un réseau, celui de la passerelle.
+const char* const AP_SSID = "PoulpyTube";
+bool apActive = false;
+void apOn();
+void apOff();
+void startMdns();
 enum WifiStep : uint8_t { W_OFF, W_WAIT, W_SCAN, W_CONNECT, W_UP };
 WifiStep wifiStep = W_OFF;
 uint32_t wifiAt = 0;
@@ -134,6 +142,16 @@ int routerChannel = 0;
 const uint8_t BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 bool sameMac(const uint8_t* a, const uint8_t* b) { return memcmp(a, b, 6) == 0; }
+
+// Empreinte du Wi-Fi de la maison : la passerelle repère les barres qui ne l'ont pas.
+uint8_t wifiSum() {
+  if (!settings.wifiSsid[0]) return 0;
+  uint8_t s = 0x5A;
+  for (const char* c = settings.wifiSsid; *c; c++) s = (uint8_t)((s << 1 | s >> 7) ^ *c);
+  s ^= 0xA5;
+  for (const char* c = settings.wifiPass; *c; c++) s = (uint8_t)((s << 1 | s >> 7) ^ *c);
+  return s ? s : 1;
+}
 
 String macText(const uint8_t* m) {
   char s[18];
@@ -344,6 +362,15 @@ void sendStatus() {
   uint8_t len = strlen(r.fw);
   d[33] = len;
   memcpy(&d[34], r.fw, len);
+  d[STATUS_WIFI_SUM] = wifiSum();
+  tubeBroadcast(p);
+}
+
+void sendWifiConfig(const uint8_t* mac) {
+  struct_dmx_packet p;
+  header(p, WIFI_CONFIG_CMD, mac);
+  memcpy(p.dmxvalues, settings.wifiSsid, sizeof(settings.wifiSsid));
+  memcpy(p.dmxvalues + WIFI_CONFIG_PASS, settings.wifiPass, sizeof(settings.wifiPass));
   tubeBroadcast(p);
 }
 
@@ -541,8 +568,12 @@ void handleState() {
   JsonObject w = doc["wifi"].to<JsonObject>();
   w["ssid"] = settings.wifiSsid;
   w["ap"] = wifiStep != W_UP;
+  w["apOn"] = apActive;
   w["ip"] = wifiStep == W_UP ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
-  w["apSsid"] = apSsid;
+  w["apSsid"] = AP_SSID;
+  uint8_t shared = 0;
+  for (uint8_t i = 0; i < rowCount; i++) shared += rows[i].wifiSum == wifiSum() || sameMac(rows[i].mac, myMac);
+  w["shared"] = shared;
   w["channel"] = detectedChannel;
   w["routerChannel"] = routerChannel;
   doc["returnDelay"] = settings.returnDelayS;
@@ -687,10 +718,14 @@ void handleSettings() {
     strncpy(settings.wifiSsid, doc["wifiSsid"].as<const char*>(), sizeof(settings.wifiSsid) - 1);
     strncpy(settings.wifiPass, doc["wifiPass"] | "", sizeof(settings.wifiPass) - 1);
     configSaveSettings(settings);
-    WiFi.disconnect(false);
+    statusRequest = true;  // les barres répondent, celles qui n'ont pas ce Wi-Fi le reçoivent
+    lastBeaconSentMs = 0;
+    // Laisser partir la réponse avant de lâcher le point d'accès ou de scanner.
+    if (wifiStep == W_UP) WiFi.disconnect(false);
     routerChannel = 0;
     wifiStep = settings.wifiSsid[0] ? W_WAIT : W_OFF;
-    wifiAt = millis();
+    wifiAt = millis() + 1500;
+    if (!settings.wifiSsid[0]) apOn();
   }
   if (doc["returnDelay"].is<int>()) {
     int d = doc["returnDelay"].as<int>();
@@ -817,11 +852,12 @@ void startGateway(Role r) {
 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_AP_STA);
-  snprintf(apSsid, sizeof(apSsid), "PoulpyTube-%02X%02X", myMac[4], myMac[5]);
-  WiFi.softAP(apSsid, nullptr, detectedChannel);
+#if defined(ESP8266)
+  // En COMBO, l'ESP8266 émet depuis l'interface point d'accès dès qu'elle existe :
+  // le Node verrait une deuxième barre (MAC du point d'accès). CONTROLLER garde la station.
+  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
+#endif
   dns.setErrorReplyCode(DNSReplyCode::NoError);
-  dns.start(53, "*", WiFi.softAPIP());
 
   server.on("/", HTTP_GET, handlePage);
   server.on("/api/state", HTTP_GET, handleState);
@@ -839,11 +875,31 @@ void startGateway(Role r) {
   server.begin();
   startMdns();
 
+  // Le Wi-Fi de la maison d'abord ; le point d'accès seulement s'il n'est pas joignable.
   wifiStep = settings.wifiSsid[0] ? W_WAIT : W_OFF;
   wifiAt = millis();
+  if (!settings.wifiSsid[0]) apOn();
   statusRequest = true;
   lastBeaconSentMs = 0;
-  Serial.printf("Wi-Fi %s ouvert, http://%s\n", apSsid, WiFi.softAPIP().toString().c_str());
+}
+
+void apOn() {
+  if (apActive) return;
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID, nullptr, detectedChannel);
+  dns.start(53, "*", WiFi.softAPIP());
+  apActive = true;
+  startMdns();
+  Serial.printf("Point d'accès %s : http://%s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+}
+
+void apOff() {
+  if (!apActive) return;
+  dns.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  apActive = false;
+  Serial.println("Point d'accès coupé : la passerelle est sur le Wi-Fi de la maison");
 }
 
 // Le Wi-Fi de la maison n'est rejoint que s'il est sur le canal des barres :
@@ -876,6 +932,7 @@ void wifiLoop(uint32_t now) {
         WiFi.scanDelete();
         Serial.printf("Wi-Fi %s : %s\n", settings.wifiSsid,
                       found < 0 ? "introuvable" : "autre canal que les barres");
+        apOn();
         wifiStep = W_WAIT;
         wifiAt = now + WIFI_RETRY_MS;
       }
@@ -885,15 +942,18 @@ void wifiLoop(uint32_t now) {
       if (WiFi.status() == WL_CONNECTED) {
         wifiStep = W_UP;
         Serial.printf("Wi-Fi %s : %s\n", settings.wifiSsid, WiFi.localIP().toString().c_str());
+        apOff();
         startMdns();
       } else if ((int32_t)(now - wifiAt) >= 0) {
         WiFi.disconnect(false);
+        apOn();
         wifiStep = W_WAIT;
         wifiAt = now + WIFI_RETRY_MS;
       }
       break;
     case W_UP:
       if (WiFi.status() != WL_CONNECTED) {
+        apOn();
         wifiStep = W_WAIT;
         wifiAt = now + 5000;
       }
@@ -996,7 +1056,28 @@ void gatewayOnStatus(const uint8_t* d) {
   memcpy(r->fw, &d[34], len);
   r->fw[len] = '\0';
   r->seen = now;
+  r->wifiSum = d[STATUS_WIFI_SUM];
   learnFrom(*r);
+  if (settings.wifiSsid[0] && r->wifiSum != wifiSum() && now - r->wifiSentMs > 4000) {
+    r->wifiSentMs = now;
+    sendWifiConfig(r->mac);
+  }
+}
+
+void gatewayOnWifiConfig(const uint8_t* d, const uint8_t* v) {
+  if (!sameMac(&d[CMD_TARGET_MAC], myMac) || role != ROLE_TUBE) return;
+  char ssid[sizeof(settings.wifiSsid)];
+  char pass[sizeof(settings.wifiPass)];
+  memcpy(ssid, v, sizeof(ssid));
+  memcpy(pass, v + WIFI_CONFIG_PASS, sizeof(pass));
+  ssid[sizeof(ssid) - 1] = '\0';
+  pass[sizeof(pass) - 1] = '\0';
+  if (!ssid[0]) return;
+  if (!strcmp(ssid, settings.wifiSsid) && !strcmp(pass, settings.wifiPass)) return;
+  memcpy(settings.wifiSsid, ssid, sizeof(ssid));
+  memcpy(settings.wifiPass, pass, sizeof(pass));
+  configSaveSettings(settings);
+  nextStatusMs = millis() + 200;  // confirmer à la passerelle
 }
 
 void gatewayLoop(unsigned long now) {
@@ -1012,7 +1093,7 @@ void gatewayLoop(unsigned long now) {
     return;
   }
 
-  dns.processNextRequest();
+  if (apActive) dns.processNextRequest();
   server.handleClient();
 #if defined(ESP8266)
   MDNS.update();

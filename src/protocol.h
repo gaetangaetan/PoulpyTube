@@ -84,6 +84,12 @@ typedef struct struct_dmx_packet {
 #define TUBE_STATUS_CMD    0xC3
 #define STATUS_INDIVIDUAL  0x01
 #define STATUS_GATEWAY     0x02
+#define STATUS_WIFI_SUM    50    // empreinte du Wi-Fi de la maison enregistré (0 = aucun)
+
+// WIFI_CONFIG (passerelle → barre) : data[4..9] MAC cible ; dmxvalues[0..32] nom, [33..97] mot de passe.
+// Chaque barre garde le Wi-Fi : celle qui devient passerelle sait rejoindre la maison.
+#define WIFI_CONFIG_CMD    0xC4
+#define WIFI_CONFIG_PASS   33
 
 // Tube → émetteur
 #define RESPONSE_MAC_CMD         0xFC
@@ -105,7 +111,7 @@ inline bool isCommandCode(uint8_t c) {
       || c == ENTER_REMOTE_SETUP_CMD || c == EXIT_REMOTE_SETUP_CMD
       || c == SET_GROUP_NUMBER_CMD || c == PANIC_RESTART_CMD
       || c == ANIMATION_TRIGGER_CMD
-      || (c >= LOOK_CMD && c <= TUBE_STATUS_CMD)
+      || (c >= LOOK_CMD && c <= WIFI_CONFIG_CMD)
       || (c >= 0xE0 && c <= 0xEF) || c == RESET_ENERGY_CMD || c == SET_POWER_LIMIT_CMD;
 }
 

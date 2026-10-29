@@ -471,6 +471,10 @@ static void processCommand(const uint8_t* mac, const struct_dmx_packet& p) {
       gatewayOnStatus(d);
       return;
 
+    case WIFI_CONFIG_CMD:
+      gatewayOnWifiConfig(d, p.dmxvalues);
+      return;
+
     case RESPONSE_MAC_CMD:      // réponse d'un autre tube
     case ANIMATION_TRIGGER_CMD:  // plus utilisé
       return;
@@ -666,6 +670,13 @@ static void executeOTAUpdate() {
   char ssid[33], password[64], url[141];
   if (!configLoadOta(ssid, password, url)) return;
   configClearOta();
+
+  // Le Wi-Fi envoyé par Pollux sert aussi de Wi-Fi maison à la passerelle, s'il n'y en a pas.
+  if (!settings.wifiSsid[0] && ssid[0]) {
+    strncpy(settings.wifiSsid, ssid, sizeof(settings.wifiSsid) - 1);
+    strncpy(settings.wifiPass, password, sizeof(settings.wifiPass) - 1);
+    configSaveSettings(settings);
+  }
 
   const char* firmwareUrl = url[0] ? url : LEGACY_OTA_URL;
   Serial.printf("Mise à jour : Wi-Fi %s, %s\n", ssid, firmwareUrl);
