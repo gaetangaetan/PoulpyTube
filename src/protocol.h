@@ -57,6 +57,34 @@ typedef struct struct_dmx_packet {
 #define RESET_ENERGY_CMD        0xF0
 #define SET_POWER_LIMIT_CMD     0xF1
 
+// Mode autonome (passerelle PoulpyTube). Voir docs/ARCHITECTURE.md § 6.
+//
+// LOOK : data[4..9] MAC cible (FF… = par groupes), [10..11] masque de groupes (bit g = groupe g,
+// 0..9), [12..21] look, [22..23] fondu ms, [24..25] version de l'état, [26] drapeaux LOOK_*.
+#define LOOK_CMD           0xC0
+#define LOOK_MASK          10
+#define LOOK_DATA          12
+#define LOOK_FADE          22
+#define LOOK_VERSION       24
+#define LOOK_FLAGS         26
+#define LOOK_FLAG_RESET    0x02  // un look de groupe posé par l'utilisateur efface le look individuel
+
+// GATEWAY_BEACON : data[4..9] MAC de la passerelle, [10..13] horloge ms, [14..15] version de
+// l'état, [16] canal, [17] drapeaux BEACON_*, [18] délai de retour du live en s.
+#define GATEWAY_BEACON_CMD 0xC1
+#define BEACON_DESIGNATED  0x01
+#define BEACON_STATUS_REQ  0x02  // les barres répondent tout de suite par TUBE_STATUS
+
+// SET_ROLE : data[4..9] MAC cible, [10] rôle (0 = barre, 1 = passerelle désignée).
+#define SET_ROLE_CMD       0xC2
+
+// TUBE_STATUS (barre → passerelle, diffusé) : data[4..9] MAC, [10] groupe, [11..12] adresse,
+// [13..14] LEDs, [15..16] limite W, [17..20] énergie mWh, [21] source (0 autonome, 1 live),
+// [22] drapeaux STATUS_*, [23..32] look autonome, [33] longueur version, [34..] version.
+#define TUBE_STATUS_CMD    0xC3
+#define STATUS_INDIVIDUAL  0x01
+#define STATUS_GATEWAY     0x02
+
 // Tube → émetteur
 #define RESPONSE_MAC_CMD         0xFC
 #define RESPONSE_INFO_CMD        0xD0
@@ -77,6 +105,7 @@ inline bool isCommandCode(uint8_t c) {
       || c == ENTER_REMOTE_SETUP_CMD || c == EXIT_REMOTE_SETUP_CMD
       || c == SET_GROUP_NUMBER_CMD || c == PANIC_RESTART_CMD
       || c == ANIMATION_TRIGGER_CMD
+      || (c >= LOOK_CMD && c <= TUBE_STATUS_CMD)
       || (c >= 0xE0 && c <= 0xEF) || c == RESET_ENERGY_CMD || c == SET_POWER_LIMIT_CMD;
 }
 

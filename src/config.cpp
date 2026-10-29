@@ -6,7 +6,9 @@
 #include "multifixure.h"
 #include "protocol.h"
 
-#define EEPROM_SIZE 256
+#define EEPROM_SIZE 512
+#define ADDR_SETTINGS 256
+#define SETTINGS_VERSION 1
 
 #define ADDR_ADDRESS 0
 #define ADDR_GROUP 8
@@ -71,7 +73,7 @@ int configLoadAddress(uint8_t group) {
     return def;
   }
   int a = read16(ADDR_ADDRESS);
-  return (a >= 1 && a <= MAX_ADDRESS) ? a : 1;
+  return (a >= 0 && a <= MAX_ADDRESS) ? a : 1;
 }
 
 void configSaveAddress(int address) {
@@ -121,5 +123,42 @@ bool configLoadOta(char* ssid, char* password, char* url) {
 void configClearOta() {
   EEPROM.write(ADDR_OTA, 0);
   EEPROM.write(ADDR_OTA_URL, 0);
+  EEPROM.commit();
+}
+
+static uint8_t crc8(const uint8_t* p, size_t n) {
+  uint8_t c = 0;
+  while (n--) {
+    c ^= *p++;
+    for (int i = 0; i < 8; i++) c = (c & 0x80) ? (c << 1) ^ 0x07 : c << 1;
+  }
+  return c;
+}
+
+void configLoadSettings(TubeSettings& s) {
+  uint8_t buf[sizeof(TubeSettings)];
+  for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
+  bool ok = EEPROM.read(ADDR_SETTINGS) == 'P' && EEPROM.read(ADDR_SETTINGS + 1) == 'T'
+         && EEPROM.read(ADDR_SETTINGS + 2) == SETTINGS_VERSION
+         && EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) == crc8(buf, sizeof(buf));
+  if (ok) {
+    memcpy(&s, buf, sizeof(s));
+    s.wifiSsid[sizeof(s.wifiSsid) - 1] = '\0';
+    s.wifiPass[sizeof(s.wifiPass) - 1] = '\0';
+    if (s.returnDelayS < 1 || s.returnDelayS > 30) s.returnDelayS = DEFAULT_RETURN_DELAY_S;
+    if (s.role > 1) s.role = 0;
+    return;
+  }
+  memset(&s, 0, sizeof(s));
+  s.returnDelayS = DEFAULT_RETURN_DELAY_S;
+}
+
+void configSaveSettings(const TubeSettings& s) {
+  const uint8_t* buf = (const uint8_t*)&s;
+  EEPROM.write(ADDR_SETTINGS, 'P');
+  EEPROM.write(ADDR_SETTINGS + 1, 'T');
+  EEPROM.write(ADDR_SETTINGS + 2, SETTINGS_VERSION);
+  for (size_t i = 0; i < sizeof(s); i++) EEPROM.write(ADDR_SETTINGS + 3 + i, buf[i]);
+  EEPROM.write(ADDR_SETTINGS + 3 + sizeof(s), crc8(buf, sizeof(s)));
   EEPROM.commit();
 }

@@ -327,7 +327,6 @@ function openScene(i){
 
 /* ---------- Sauvegarde sur le serveur ---------- */
 async function gatewayBackup(){
-  if(!DEMO){const b=await api("GET","/api/backup");if(b)return b}
   return{format:"poulpytube.backup",version:1,scenes:S.scenes.filter(Boolean),
     tubes:S.tubes.map(t=>({mac:t.mac,group:t.group,address:t.address,leds:t.leds,watts:t.watts})),settings:{returnDelay:S.returnDelay}};
 }
@@ -336,7 +335,15 @@ async function applyBackup(b,withTubes){
   if(b.settings?.returnDelay)S.returnDelay=b.settings.returnDelay;
   if(withTubes)for(const c of b.tubes||[]){const t=S.tubes.find(x=>x.mac===c.mac);if(t)Object.assign(t,{group:c.group,address:c.address,leds:c.leds,watts:c.watts})}
   S.activeScene=-1;persistDemo();
-  await api("POST","/api/backup",{backup:b,tubes:withTubes}).catch(()=>toast("Passerelle injoignable"));
+  if(DEMO)return;
+  try{
+    for(let i=0;i<NSCENES;i++){const s=S.scenes[i];
+      if(s)await api("POST","/api/scenes",{slot:i,name:s.name||"",fadeMs:s.fadeMs??1000,groups:s.groups||[],tubes:s.tubes||[]});
+      else await api("POST","/api/scenes/delete",{slot:i})}
+    await api("POST","/api/settings",{returnDelay:S.returnDelay});
+    if(withTubes)for(const c of b.tubes||[])if(S.tubes.some(x=>x.mac===c.mac))
+      await api("POST","/api/tube",{mac:c.mac,group:c.group,address:c.address,leds:c.leds,wattLimit:c.watts});
+  }catch{toast("Passerelle injoignable")}
 }
 const noNet=()=>toast("Pas d’internet : passez le téléphone sur le Wi-Fi de la maison");
 function fmtDate(iso){return iso?new Date(iso).toLocaleString("fr",{dateStyle:"short",timeStyle:"short"}):"jamais"}
@@ -394,7 +401,7 @@ function settingRow(title,sub,onclick){
 }
 function renderSettings(){
   const box=$("#settings");box.replaceChildren(
-    settingRow("Wi-Fi",S.wifi.ap?"Wi-Fi propre PoulpyTube (secours)":`${S.wifi.ssid} · ${S.wifi.ip}`,openWifi),
+    settingRow("Wi-Fi",S.wifi.ap?(S.wifi.ssid?`${S.wifi.ssid} : pas connecté`:"Wi-Fi de la maison : aucun"):`${S.wifi.ssid} · ${S.wifi.ip}`,openWifi),
     settingRow("Passerelle",`${tubeName({mac:S.gateway.mac})} · ${S.gateway.designated?"désignée":"secours"}`,openGateway),
     settingRow("Retour au look autonome",`${S.returnDelay} s après la fin du live`,openReturn),
     settingRow("Canal radio",`Canal ${S.wifi.channel}`,openChannel),
@@ -490,12 +497,14 @@ function openTube(t){
 function openWifi(){
   const ssid=h("input",{type:"text",placeholder:"Nom du Wi-Fi de la maison",value:S.wifi.ssid||"",autocapitalize:"off",autocomplete:"off"});
   const pass=h("input",{type:"password",placeholder:"Mot de passe"});
+  const rc=S.wifi.routerChannel;
   openSheet("Wi-Fi",
-    h("div",{class:"note"},S.wifi.ap?"La passerelle utilise son propre Wi-Fi, PoulpyTube (ouvert).":`Connectée à ${S.wifi.ssid} · ${S.wifi.ip}`),
+    h("div",{class:"note"},S.wifi.ap?(S.wifi.ssid?`Pas connectée à ${S.wifi.ssid}.`:"Pas de Wi-Fi de la maison."):`Connectée à ${S.wifi.ssid} · ${S.wifi.ip}`),
+    S.wifi.ap&&rc&&rc!==S.wifi.channel?h("div",{class:"note"},`Le routeur est sur le canal ${rc}, les barres sur le canal ${S.wifi.channel}. La passerelle ne le rejoint que sur le même canal (Réglages › Canal radio).`):null,
     ssid,pass,
     h("button",{class:"big accent",onclick:async()=>{S.wifi.ssid=ssid.value;try{await api("POST","/api/settings",{wifiSsid:ssid.value,wifiPass:pass.value})}catch{}
       toast("Enregistré · la passerelle se reconnecte");closeSheet()}},"Enregistrer"),
-    h("div",{class:"note"},"Si la connexion échoue, la passerelle rouvre son propre Wi-Fi au bout de 20 s."));
+    h("div",{class:"note"},`Le Wi-Fi ${S.wifi.apSsid||"PoulpyTube"} (ouvert) reste toujours allumé : le téléphone peut s’y connecter même sans la maison.`));
 }
 function openGateway(){
   openSheet("Passerelle",
@@ -512,16 +521,16 @@ function openReturn(){
 function openChannel(){
   openSheet("Canal radio",
     kv("Canal",stepper(S.wifi.channel,1,13,v=>String(v),v=>{S.wifi.channel=v})),
-    h("div",{class:"note"},S.wifi.ap?"Toutes les barres passent sur ce canal.":"Sur le Wi-Fi de la maison, le canal est celui du routeur : il est appliqué automatiquement."),
+    h("div",{class:"note"},"Toutes les barres passent sur ce canal. Pollux et le PoulpyNode doivent être sur le même."),
     h("button",{class:"big accent",onclick:()=>{api("POST","/api/settings",{channel:S.wifi.channel}).catch(()=>{});toast("Canal diffusé aux barres");closeSheet()}},"Diffuser aux barres"));
 }
 function openUpdate(){
-  const old=S.tubes.filter(t=>t.fw!==S.tubes[0]?.fw).length;
+  const fw=S.fw||"?";
+  const same=S.tubes.filter(t=>t.fw===fw).length;
   openSheet("Mises à jour",
-    kv("Dernier firmware",h("span",{},"261019-0124")),
-    kv("Barres à jour",h("span",{},`${S.tubes.length-old} / ${S.tubes.length}`)),
-    h("div",{class:"note"},"Les barres téléchargent le firmware depuis le catalogue en ligne, par le Wi-Fi de la maison."),
-    h("button",{class:"big accent",onclick:()=>{toast("Mise à jour lancée");closeSheet()}},"Mettre à jour les barres"));
+    kv("Firmware de la passerelle",h("span",{},fw)),
+    kv("Barres au même firmware",h("span",{},`${same} / ${S.tubes.length}`)),
+    h("div",{class:"note"},"Pour mettre les barres à jour : Pollux, page Lampes, bouton Outils."));
 }
 
 /* ---------- Onglets, divers ---------- */
@@ -529,10 +538,17 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("on",p.id==="pg-"+b.dataset.pg));
 });
-$("#btnScan").onclick=async()=>{toast("Recherche…");try{await api("POST","/api/scan");if(!DEMO)S.tubes=await api("GET","/api/tubes")}catch{}render()};
+$("#btnScan").onclick=async()=>{toast("Recherche…");try{await api("POST","/api/scan");if(!DEMO){await new Promise(r=>setTimeout(r,2500));S.tubes=await api("GET","/api/tubes")}}catch{}render()};
 let tt=0;function toast(m){const e=$("#toast");e.textContent=m;e.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("on"),1800)}
 
-load();requestAnimationFrame(drawPreviews);
+// Les barres et la passerelle bougent sans la page : relire toutes les 4 s (pas pendant un panneau ouvert).
+async function poll(){
+  if(DEMO||document.hidden||$("#sheet").classList.contains("on"))return;
+  try{const st=await api("GET","/api/state");const tb=await api("GET","/api/tubes");
+    if($("#sheet").classList.contains("on"))return;
+    Object.assign(S,st);S.tubes=tb||[];render()}catch{}
+}
+load();requestAnimationFrame(drawPreviews);setInterval(poll,4000);
 </script>
 </body>
 </html>

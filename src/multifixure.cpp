@@ -70,24 +70,33 @@ static bool onTrainVaried(int pos, int head, int baseLen, int period, uint8_t rn
     return within >= 0 && within < len;
 }
 
-bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
+// État des animations (une seule barre par ESP).
+static uint8_t rainbowHue, breathePhase, crossFrac;
+static uint16_t wipeHead, crossHead, chaseHead;
+static uint8_t lastTrigger;
+
+void renderLook(const uint8_t* look, int ledCount, uint8_t seed)
 {
-    if (!dmx512 || ledCount <= 0) return false;
-    const int base = address1Based - 1;
-    if (base < 0 || base + MULTIFIXTURE_SLOT > 512) return false;
+    if (!look || ledCount <= 0) return;
 
-    const uint8_t r = dmx512[base + 0];
-    const uint8_t g = dmx512[base + 1];
-    const uint8_t b = dmx512[base + 2];
-    const MultiLook look = lookFromDmx(dmx512[base + 3]);
-    const uint8_t speed = dmx512[base + 4];
-    const uint8_t width = dmx512[base + 5];
-    const uint8_t extra = dmx512[base + 6];
-    const uint8_t rnd = dmx512[base + 7];
+    const uint8_t r = look[0];
+    const uint8_t g = look[1];
+    const uint8_t b = look[2];
+    const MultiLook kind = lookFromDmx(look[3]);
+    const uint8_t speed = look[4];
+    const uint8_t width = look[5];
+    const uint8_t extra = look[6];
+    const uint8_t rnd = look[7];
 
+    if (look[9] != lastTrigger)
+    {
+        lastTrigger = look[9];
+        rainbowHue = breathePhase = crossFrac = 0;
+        wipeHead = crossHead = chaseHead = 0;
+    }
     FastLED.clear();
 
-    switch (look)
+    switch (kind)
     {
     case LookUni:
         fill_solid(leds, ledCount, CRGB(r, g, b));
@@ -95,11 +104,10 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
 
     case LookRainbow:
     {
-        static uint8_t hue;
         uint8_t delta = map(width, 0, 255, 1, 40);
         int step = map((int)speed, 0, 255, -6, 6);
-        hue += (uint8_t)step;
-        fill_rainbow(leds, ledCount, hue, delta);
+        rainbowHue += (uint8_t)step;
+        fill_rainbow(leds, ledCount, rainbowHue, delta);
         tint(leds, ledCount, r ? r : 255, g ? g : 255, b ? b : 255);
         break;
     }
@@ -131,21 +139,19 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
 
     case LookWipe:
     {
-        static uint16_t head;
         int w = max(1, (int)map((int)width, 0, 255, 1, ledCount));
-        w = variedLen(w, (int)(head / max(1, ledCount)), rnd);
+        w = variedLen(w, (int)(wipeHead / max(1, ledCount)), rnd);
         int step = (int)map((int)speed, 0, 255, 1, 8);
-        head = (uint16_t)((head + step) % max(1, (int)ledCount));
+        wipeHead = (uint16_t)((wipeHead + step) % max(1, (int)ledCount));
         for (int i = 0; i < w; i++)
-            leds[(head + i) % ledCount] = CRGB(r, g, b);
+            leds[(wipeHead + i) % ledCount] = CRGB(r, g, b);
         break;
     }
 
     case LookBreathe:
     {
-        static uint8_t phase;
-        phase += (uint8_t)map(speed, 0, 255, 1, 8);
-        uint8_t wave = sin8(phase + extra + (uint8_t)(address1Based * 16));
+        breathePhase += (uint8_t)map(speed, 0, 255, 1, 8);
+        uint8_t wave = sin8(breathePhase + extra + seed);
         uint8_t lo = (uint8_t)map(width, 0, 255, 0, 180);
         uint8_t bri = lo + scale8(wave, 255 - lo);
         fill_solid(leds, ledCount, CRGB((r * bri) / 255, (g * bri) / 255, (b * bri) / 255));
@@ -154,13 +160,11 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
 
     case LookCrossing:
     {
-        static uint16_t head;
-        static uint8_t frac;
         int len = max(1, (int)map((int)width, 0, 255, 1, ledCount));
         int period = max(1, len + max(1, len / 2));
-        frac += (uint8_t)map((int)speed, 0, 255, 1, 8);
-        head = (uint16_t)(head + frac / 3);
-        frac = (uint8_t)(frac % 3);
+        crossFrac += (uint8_t)map((int)speed, 0, 255, 1, 8);
+        crossHead = (uint16_t)(crossHead + crossFrac / 3);
+        crossFrac = (uint8_t)(crossFrac % 3);
         CRGB c1 = CRGB(r, g, b);
         CRGB c2 = CRGB::White;
         if (extra != 0)
@@ -168,9 +172,9 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
         c2.nscale8(rgbBri(r, g, b));
         for (int i = 0; i < ledCount; i++)
         {
-            if (onTrainVaried(i, (int)head, len, period, rnd))
+            if (onTrainVaried(i, (int)crossHead, len, period, rnd))
                 leds[i] = c1;
-            else if (onTrainVaried(ledCount - 1 - i, (int)head + period / 2, len, period, rnd))
+            else if (onTrainVaried(ledCount - 1 - i, (int)crossHead + period / 2, len, period, rnd))
                 leds[i] = c2;
         }
         break;
@@ -178,21 +182,27 @@ bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
 
     case LookChase:
     {
-        static uint16_t head;
         int len = max(1, (int)map((int)width, 0, 255, 1, ledCount));
         int gap = (int)map((int)extra, 0, 255, 0, ledCount);
         int period = max(1, len + gap);
         int step = (int)map((int)speed, 0, 255, 1, 8);
-        head = (uint16_t)(head + step);
+        chaseHead = (uint16_t)(chaseHead + step);
         CRGB c = CRGB(r, g, b);
         for (int i = 0; i < ledCount; i++)
         {
-            if (onTrainVaried(i, (int)head, len, period, rnd))
+            if (onTrainVaried(i, (int)chaseHead, len, period, rnd))
                 leds[i] = c;
         }
         break;
     }
     }
+}
 
+bool renderMultifixture(const uint8_t* dmx512, int address1Based, int ledCount)
+{
+    if (!dmx512 || ledCount <= 0) return false;
+    const int base = address1Based - 1;
+    if (base < 0 || base + MULTIFIXTURE_SLOT > 512) return false;
+    renderLook(dmx512 + base, ledCount, (uint8_t)(address1Based * 16));
     return true;
 }

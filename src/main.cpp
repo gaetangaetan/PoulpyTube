@@ -35,12 +35,15 @@ extern "C" {
 #define POULPY_LED_PIN 16  // câblage du module ESP32 (WLED l'utilisait)
 #endif
 
+#include "autolook.h"
 #include "config.h"
+#include "gateway.h"
 #include "legacy.h"
 #include "led_modes.h"
 #include "multifixure.h"
 #include "power_budget.h"
 #include "protocol.h"
+#include "tube.h"
 
 static const char* const LEGACY_OTA_URL = "http://poulpylights.gaetanstreel.com/receiver/firmware.bin";
 static const uint16_t FRAME_MS = 10;
@@ -54,16 +57,20 @@ uint16_t ledCount = DEFAULT_LED_COUNT;
 int setupTubeNumber = 0;  // groupe 0..9
 uint8_t hueOffset = 0;
 
-static int setupAddress = 1;
+int setupAddress = 1;  // 0 = suit le groupe
+TubeSettings settings;
 static volatile bool multifixtureEnabled = false;
+static volatile unsigned long lastLiveMs = 0;  // dernier bloc DMX reçu, 0 = jamais
+static bool settingsDirty = false;
+static unsigned long settingsDirtyAt = 0;
 static volatile unsigned long lastMultifixureMs = 0;
 static volatile bool remoteConfigActive = false;  // sélection depuis Pollux : motif rouge/blanc, DMX ignoré
 
-static uint8_t myMac[6];
+uint8_t myMac[6];
 static uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static uint8_t senderMacAddress[6];
 static bool hasSenderAddress = false;
-static uint8_t detectedChannel = 0;
+uint8_t detectedChannel = 0;
 static uint8_t maxBrightness = 255;
 static unsigned long bootTime = 0;
 
@@ -108,7 +115,7 @@ struct RxCommand {
   struct_dmx_packet packet;
 };
 
-static const uint8_t CMD_QUEUE_SIZE = 6;
+static const uint8_t CMD_QUEUE_SIZE = 12;  // une rediffusion de passerelle = ~12 paquets
 static RxCommand cmdQueue[CMD_QUEUE_SIZE];
 static volatile uint8_t cmdHead = 0;  // écrit par la réception
 static volatile uint8_t cmdTail = 0;  // écrit par loop()
@@ -139,6 +146,7 @@ void OnDataRecv(uint8_t* mac, uint8_t* incomingData, uint8_t len) {
   if (remoteConfigActive) return;
 
   memcpy(&dmxChannels[p->blockNumber * 128], p->dmxvalues, 128);
+  lastLiveMs = millis() | 1;
   multifixtureEnabled = p->data[STREAM_KIND] == STREAM_MULTIFIXTURE
                      && p->data[STREAM_MULTIFIXTURE_MARK] == STREAM_MULTIFIXTURE_MAGIC;
   if (multifixtureEnabled) lastMultifixureMs = millis();
@@ -311,7 +319,7 @@ static void handleNewCommand(uint8_t cmd, const uint8_t* d) {
 
     case SET_DMX_ADDRESS_CMD: {
       uint16_t addr = d[10] | (d[11] << 8);
-      if (addr >= 1 && addr <= 512 - MULTIFIXTURE_SLOT + 1) {
+      if (addr <= 512 - MULTIFIXTURE_SLOT + 1) {  // 0 = suit le groupe
         setupAddress = addr;
         configSaveAddress(addr);
         sendAckResponse(cmd, ACK_OK);
@@ -447,6 +455,22 @@ static void processCommand(const uint8_t* mac, const struct_dmx_packet& p) {
       scheduleRestart(100);
       return;
 
+    case LOOK_CMD:
+      gatewayOnLook(d);
+      return;
+
+    case GATEWAY_BEACON_CMD:
+      gatewayOnBeacon(d);
+      return;
+
+    case SET_ROLE_CMD:
+      gatewayOnSetRole(d);
+      return;
+
+    case TUBE_STATUS_CMD:
+      gatewayOnStatus(d);
+      return;
+
     case RESPONSE_MAC_CMD:      // réponse d'un autre tube
     case ANIMATION_TRIGGER_CMD:  // plus utilisé
       return;
@@ -479,19 +503,75 @@ static void renderIdentify(unsigned long now) {
   if ((now - identifySince) / 200 % 2 == 0) fill_solid(leds, ledCount, CRGB::White);
 }
 
+static int effectiveAddress() {
+  return setupAddress ? setupAddress : 1 + 10 * setupTubeNumber;
+}
+
 // Retourne la période d'image voulue par le mode affiché.
-static uint16_t renderDmx() {
+static uint16_t renderLive() {
   if (multifixtureEnabled) {
-    if (millis() - lastMultifixureMs > MULTIFIXTURE_TIMEOUT_MS) {
-      multifixtureEnabled = false;  // flux arrêté : noir
-      return FRAME_MS;
-    }
-    renderMultifixture(dmxChannels, setupAddress, ledCount);
+    renderMultifixture(dmxChannels, effectiveAddress(), ledCount);
     return FRAME_MS;
   }
   uint8_t mode = dmxChannels[0];
   if (renderExtendedLedMode(mode)) return FRAME_MS;
   return renderLegacyMode(mode);
+}
+
+// Le live garde la main jusqu'au délai de retour après son dernier paquet ;
+// ensuite la dernière image s'éteint, puis le look autonome monte.
+static const unsigned long RETURN_FADE_MS = 500;
+
+static uint16_t renderFrame(unsigned long now) {
+  const unsigned long last = lastLiveMs;
+  const uint8_t seed = (uint8_t)(effectiveAddress() * 16);
+  if (last) {
+    const unsigned long hold = settings.returnDelayS * 1000UL;
+    const unsigned long age = now - last;
+    if (age < hold) return renderLive();
+    if (age < hold + RETURN_FADE_MS) {
+      renderLive();
+      nscale8(leds, ledCount, 255 - (age - hold) * 255 / RETURN_FADE_MS);
+      return FRAME_MS;
+    }
+    if (age < hold + 2 * RETURN_FADE_MS) {
+      autoLookRender(now, ledCount, seed);
+      nscale8(leds, ledCount, (age - hold - RETURN_FADE_MS) * 255 / RETURN_FADE_MS);
+      return FRAME_MS;
+    }
+    noInterrupts();
+    if (lastLiveMs == last) {
+      lastLiveMs = 0;
+      multifixtureEnabled = false;
+    }
+    interrupts();
+  }
+  autoLookRender(now, ledCount, seed);
+  return FRAME_MS;
+}
+
+// ---------- Ce que la passerelle emprunte au tube (tube.h) ----------
+
+void tubeProcessPacket(const struct_dmx_packet& p) {
+  processCommand(myMac, p);
+}
+
+void tubeBroadcast(const struct_dmx_packet& p) {
+  esp_now_send(broadcastAddress, (uint8_t*)&p, sizeof(struct_dmx_packet));
+}
+
+bool tubeIsLive() {
+  const unsigned long last = lastLiveMs;
+  return last && millis() - last < settings.returnDelayS * 1000UL;
+}
+
+void tubeSaveSettingsSoon() {
+  settingsDirty = true;
+  settingsDirtyAt = millis();
+}
+
+void tubeRestart(unsigned long inMs) {
+  scheduleRestart(inMs);
 }
 
 // ---------- Démarrage : canal et mise à jour ----------
@@ -639,6 +719,8 @@ void setup() {
   ledCount = configLoadLedCount();
   setupTubeNumber = configLoadGroup();
   setupAddress = configLoadAddress(setupTubeNumber);
+  configLoadSettings(settings);
+  autoLookBegin(settings.autoLook);
 
   FastLED.addLeds<WS2812, POULPY_LED_PIN, GRB>(leds, ledCount);
   powerBudgetLoad();
@@ -648,9 +730,8 @@ void setup() {
   WiFi.disconnect();
 #if defined(ESP8266)
   ESP.eraseConfig();  // sans ça, ESP-NOW ne reçoit parfois rien
-#else
-  WiFi.persistent(false);
 #endif
+  WiFi.persistent(false);  // la passerelle gère son Wi-Fi elle-même, rien en flash
   WiFi.mode(WIFI_STA);
   WiFi.macAddress(myMac);
   Serial.printf("MAC %s | groupe %d | adresse %d | %d LEDs\n",
@@ -671,6 +752,8 @@ void setup() {
     if (senderMacFromScan[i] != 0x00 && senderMacFromScan[i] != 0xFF) scanMacValid = true;
   if (scanMacValid)
     esp_now_add_peer(senderMacFromScan, ESP_NOW_ROLE_COMBO, detectedChannel, NULL, 0);
+
+  gatewayBegin();
 }
 
 void loop() {
@@ -686,6 +769,13 @@ void loop() {
 
   if (identifyActive && now - identifySince >= IDENTIFY_MS) identifyActive = false;
 
+  if (settingsDirty && now - settingsDirtyAt >= 3000) {
+    settingsDirty = false;
+    configSaveSettings(settings);
+  }
+
+  gatewayLoop(now);
+
   if (now - lastFrameMs < framePeriodMs) return;
   lastFrameMs = now;
 
@@ -697,7 +787,7 @@ void loop() {
     renderIdentify(now);
     framePeriodMs = FRAME_MS;
   } else {
-    framePeriodMs = renderDmx();
+    framePeriodMs = renderFrame(now);
   }
   poulpyShow();
 }
