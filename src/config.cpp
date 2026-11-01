@@ -8,7 +8,9 @@
 
 #define EEPROM_SIZE 512
 #define ADDR_SETTINGS 256
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2
+// v1 = sans name (111 octets). v2 = + name[25].
+#define SETTINGS_V1_SIZE 111
 
 #define ADDR_ADDRESS 0
 #define ADDR_GROUP 8
@@ -136,21 +138,28 @@ static uint8_t crc8(const uint8_t* p, size_t n) {
 }
 
 void configLoadSettings(TubeSettings& s) {
-  uint8_t buf[sizeof(TubeSettings)];
-  for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
-  bool ok = EEPROM.read(ADDR_SETTINGS) == 'P' && EEPROM.read(ADDR_SETTINGS + 1) == 'T'
-         && EEPROM.read(ADDR_SETTINGS + 2) == SETTINGS_VERSION
-         && EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) == crc8(buf, sizeof(buf));
-  if (ok) {
-    memcpy(&s, buf, sizeof(s));
-    s.wifiSsid[sizeof(s.wifiSsid) - 1] = '\0';
-    s.wifiPass[sizeof(s.wifiPass) - 1] = '\0';
-    if (s.returnDelayS < 1 || s.returnDelayS > 30) s.returnDelayS = DEFAULT_RETURN_DELAY_S;
-    if (s.role > 1) s.role = 0;
-    return;
-  }
   memset(&s, 0, sizeof(s));
   s.returnDelayS = DEFAULT_RETURN_DELAY_S;
+  if (EEPROM.read(ADDR_SETTINGS) != 'P' || EEPROM.read(ADDR_SETTINGS + 1) != 'T') return;
+  uint8_t ver = EEPROM.read(ADDR_SETTINGS + 2);
+  if (ver == SETTINGS_VERSION) {
+    uint8_t buf[sizeof(TubeSettings)];
+    for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
+    if (EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) != crc8(buf, sizeof(buf))) return;
+    memcpy(&s, buf, sizeof(s));
+  } else if (ver == 1) {
+    uint8_t buf[SETTINGS_V1_SIZE];
+    for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
+    if (EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) != crc8(buf, sizeof(buf))) return;
+    memcpy(&s, buf, SETTINGS_V1_SIZE);  // name reste vide
+  } else {
+    return;
+  }
+  s.wifiSsid[sizeof(s.wifiSsid) - 1] = '\0';
+  s.wifiPass[sizeof(s.wifiPass) - 1] = '\0';
+  s.name[sizeof(s.name) - 1] = '\0';
+  if (s.returnDelayS < 1 || s.returnDelayS > 30) s.returnDelayS = DEFAULT_RETURN_DELAY_S;
+  if (s.role > 1) s.role = 0;
 }
 
 void configSaveSettings(const TubeSettings& s) {

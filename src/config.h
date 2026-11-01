@@ -20,6 +20,8 @@
 #define DEFAULT_LED_COUNT 144
 #define DEFAULT_RETURN_DELAY_S 4
 
+#define TUBE_NAME_MAX 24
+
 struct TubeSettings {
   uint8_t role;          // 0 = barre, 1 = passerelle désignée
   uint8_t returnDelayS;  // délai avant de revenir au look autonome quand le live se tait
@@ -27,6 +29,7 @@ struct TubeSettings {
   uint8_t autoLook[10];  // look autonome
   char wifiSsid[33];     // Wi-Fi de la maison (passerelle)
   char wifiPass[65];
+  char name[TUBE_NAME_MAX + 1];  // nom affiché (v2)
 };
 
 void configBegin();

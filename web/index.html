@@ -190,14 +190,14 @@ function demoState(){
   const lk=[0,7,5,1,6,4,0,0,0,0];
   S.groups=cols.map((c,i)=>({n:i+1,look:[c[0],c[1],c[2],lookValue(lk[i]),120,90,0,0,0,0],count:0}));
   S.tubes=[
-    {mac:"48:3F:DA:57:42:7F",group:1,address:0,leds:144,watts:0,batt:82,fw:"261019-0124",src:"auto",gw:true},
-    {mac:"24:A1:60:2D:46:D4",group:1,address:0,leds:144,watts:0,batt:77,fw:"261019-0124",src:"auto"},
-    {mac:"5C:CF:7F:11:22:33",group:2,address:0,leds:144,watts:20,batt:64,fw:"261019-0124",src:"auto"},
-    {mac:"5C:CF:7F:44:55:66",group:2,address:0,leds:144,watts:20,batt:58,fw:"261019-0124",src:"auto"},
-    {mac:"84:F3:EB:AA:BB:01",group:3,address:0,leds:144,watts:0,batt:91,fw:"261019-0124",src:"auto"},
-    {mac:"84:F3:EB:AA:BB:02",group:4,address:0,leds:72,watts:0,batt:40,fw:"261019-0124",src:"auto"},
-    {mac:"84:F3:EB:AA:BB:03",group:5,address:31,leds:144,watts:0,batt:null,fw:"261012-1730",src:"auto"},
-    {mac:"84:F3:EB:AA:BB:04",group:6,address:0,leds:144,watts:0,batt:23,fw:"261019-0124",src:"auto"},
+    {mac:"48:3F:DA:57:42:7F",name:"Scène",group:1,address:0,leds:144,watts:0,batt:82,fw:"261019-0124",src:"auto",gw:true},
+    {mac:"24:A1:60:2D:46:D4",name:"Fond",group:1,address:0,leds:144,watts:0,batt:77,fw:"261019-0124",src:"auto"},
+    {mac:"5C:CF:7F:11:22:33",name:"",group:2,address:0,leds:144,watts:20,batt:64,fw:"261019-0124",src:"auto"},
+    {mac:"5C:CF:7F:44:55:66",name:"Pilier G",group:2,address:0,leds:144,watts:20,batt:58,fw:"261019-0124",src:"auto"},
+    {mac:"84:F3:EB:AA:BB:01",name:"Pilier D",group:3,address:0,leds:144,watts:0,batt:91,fw:"261019-0124",src:"auto"},
+    {mac:"84:F3:EB:AA:BB:02",name:"",group:4,address:0,leds:72,watts:0,batt:40,fw:"261019-0124",src:"auto"},
+    {mac:"84:F3:EB:AA:BB:03",name:"Entrée",group:5,address:31,leds:144,watts:0,batt:null,fw:"261012-1730",src:"auto"},
+    {mac:"84:F3:EB:AA:BB:04",name:"",group:6,address:0,leds:144,watts:0,batt:23,fw:"261019-0124",src:"auto"},
   ];
   S.wifi={ssid:"Maison",ip:"192.168.0.57",ap:false,channel:6};
   try{const saved=JSON.parse(localStorage.getItem("ptDemoScenes")||"null");if(Array.isArray(saved)&&saved.length===NSCENES){S.scenes=saved;return}}catch{}
@@ -288,13 +288,13 @@ function renderScenes(){
     box.append(tile);
   }
 }
-function longPress(el,onTap,onLong){
+function longPress(el,onTap,onLong,ms=500){
   let tm=0,long=false;
-  el.addEventListener("pointerdown",()=>{long=false;tm=setTimeout(()=>{long=true;navigator.vibrate?.(15);onLong()},500)});
+  el.addEventListener("pointerdown",e=>{if(e.button!=null&&e.button!==0)return;long=false;tm=setTimeout(()=>{long=true;navigator.vibrate?.(15);onLong()},ms)});
   const cancel=()=>clearTimeout(tm);
   el.addEventListener("pointerup",cancel);el.addEventListener("pointerleave",cancel);el.addEventListener("pointercancel",cancel);
   el.addEventListener("contextmenu",e=>e.preventDefault());
-  el.addEventListener("click",()=>{if(!long)onTap()});
+  el.addEventListener("click",e=>{if(long){e.preventDefault();e.stopPropagation();return}onTap()});
 }
 function recallScene(i){
   const sc=S.scenes[i];if(!sc)return;
@@ -329,12 +329,12 @@ function openScene(i){
 /* ---------- Sauvegarde sur le serveur ---------- */
 async function gatewayBackup(){
   return{format:"poulpytube.backup",version:1,scenes:S.scenes.filter(Boolean),
-    tubes:S.tubes.map(t=>({mac:t.mac,group:t.group,address:t.address,leds:t.leds,watts:t.watts})),settings:{returnDelay:S.returnDelay}};
+    tubes:S.tubes.map(t=>({mac:t.mac,name:t.name||"",group:t.group,address:t.address,leds:t.leds,watts:t.watts})),settings:{returnDelay:S.returnDelay}};
 }
 async function applyBackup(b,withTubes){
   S.scenes=Array(NSCENES).fill(null);for(const s of b.scenes||[])if(s.slot>=0&&s.slot<NSCENES)S.scenes[s.slot]=s;
   if(b.settings?.returnDelay)S.returnDelay=b.settings.returnDelay;
-  if(withTubes)for(const c of b.tubes||[]){const t=S.tubes.find(x=>x.mac===c.mac);if(t)Object.assign(t,{group:c.group,address:c.address,leds:c.leds,watts:c.watts})}
+  if(withTubes)for(const c of b.tubes||[]){const t=S.tubes.find(x=>x.mac===c.mac);if(t)Object.assign(t,{name:c.name||t.name,group:c.group,address:c.address,leds:c.leds,watts:c.watts})}
   S.activeScene=-1;persistDemo();
   if(DEMO)return;
   try{
@@ -343,7 +343,7 @@ async function applyBackup(b,withTubes){
       else await api("POST","/api/scenes/delete",{slot:i})}
     await api("POST","/api/settings",{returnDelay:S.returnDelay});
     if(withTubes)for(const c of b.tubes||[])if(S.tubes.some(x=>x.mac===c.mac))
-      await api("POST","/api/tube",{mac:c.mac,group:c.group,address:c.address,leds:c.leds,wattLimit:c.watts});
+      await api("POST","/api/tube",{mac:c.mac,name:c.name||"",group:c.group,address:c.address,leds:c.leds,wattLimit:c.watts});
   }catch{toast("Passerelle injoignable")}
 }
 const noNet=()=>toast("Pas d’internet : passez le téléphone sur le Wi-Fi de la maison");
@@ -384,17 +384,24 @@ function renderGroups(){
       preview(()=>g.look)));
   }
 }
-function tubeName(t){return"…"+t.mac.slice(-8)}
+function tubeName(t){return(t.name&&String(t.name).trim())||("…"+t.mac.slice(-8))}
 function addrText(t){return t.address?("adr. "+t.address):"adr. auto"}
+async function identifyTube(t){
+  toast("Clignote : "+tubeName(t));
+  try{await api("POST","/api/tube",{mac:t.mac,identify:true})}catch{toast("Passerelle injoignable")}
+}
 function renderTubes(){
   const box=$("#tubes");box.replaceChildren();
   if(!S.tubes.length){box.append(h("div",{class:"note"},"Aucune barre trouvée. Touchez « Rechercher les barres »."));return}
-  for(const t of [...S.tubes].sort((a,b)=>a.group-b.group)){
-    box.append(h("button",{class:"row",onclick:()=>openTube(t)},
+  box.append(h("div",{class:"hint",style:"margin:0 0 4px"},"Toucher : réglages · Appui long : faire clignoter"));
+  for(const t of [...S.tubes].sort((a,b)=>a.group-b.group||tubeName(a).localeCompare(tubeName(b),"fr"))){
+    const row=h("button",{class:"row"},
       h("span",{class:"dot "+t.src}),
       h("div",{class:"main"},h("div",{class:"t"},tubeName(t),t.gw?h("span",{class:"gw"},"PASSERELLE"):null),
-        h("div",{class:"s"},`Groupe ${t.group} · ${addrText(t)} · ${t.leds} LED`)),
-      h("div",{class:"r"},t.batt==null?"secteur":t.batt+" %")));
+        h("div",{class:"s"},`${t.name?("…"+t.mac.slice(-8)+" · "):""}Groupe ${t.group} · ${addrText(t)} · ${t.leds} LED`)),
+      h("div",{class:"r"},t.batt==null?"secteur":t.batt+" %"));
+    longPress(row,()=>openTube(t),()=>identifyTube(t),1000);
+    box.append(row);
   }
 }
 function settingRow(title,sub,onclick){
@@ -408,6 +415,7 @@ function renderSettings(){
     settingRow("Canal radio",`Canal ${S.wifi.channel}`,openChannel),
     settingRow("Sauvegarde","Scènes et barres sur gaetanstreel.com",openBackup),
     settingRow("Mises à jour","Firmware des barres",openUpdate),
+    settingRow("Réinitialiser (tests)","Oublier tous les Wi-Fi sur toutes les barres",openResetWifi),
     h("div",{class:"note",style:"margin-top:6px"},"Adresse : poulpytube.local"+(S.wifi.ip&&!S.wifi.ap?" · "+S.wifi.ip:"")));
 }
 
@@ -476,6 +484,12 @@ function openLook(target){
 
 /* Une barre */
 function openTube(t){
+  const nameIn=h("input",{type:"text",placeholder:"Nom de la barre",value:t.name||"",maxlength:24});
+  nameIn.addEventListener("change",async()=>{
+    const name=nameIn.value.trim().slice(0,24);t.name=name;
+    try{await api("POST","/api/tube",{mac:t.mac,name})}catch{toast("Passerelle injoignable")}
+    const title=$("#sheet h2");if(title)title.textContent="Barre "+tubeName(t);
+  });
   const idBtn=h("button",{class:"big accent",onclick:async e=>{const b=e.currentTarget;b.classList.remove("blink");void b.offsetWidth;b.classList.add("blink");
     try{await api("POST","/api/tube",{mac:t.mac,identify:true})}catch{toast("Passerelle injoignable")}}},"Faire clignoter");
   const send=async(patch)=>{Object.assign(t,patch);try{await api("POST","/api/tube",{mac:t.mac,...patch})}catch{toast("Passerelle injoignable")}};
@@ -487,6 +501,7 @@ function openTube(t){
   const segFix=h("button",{class:t.address?"on":"",onclick:()=>{segFix.classList.add("on");segAuto.classList.remove("on");send({address:+addrStep.querySelector(".v").textContent});showAddr()}},"Fixe");
   showAddr();
   openSheet("Barre "+tubeName(t),
+    nameIn,
     idBtn,
     kv("Groupe",stepper(t.group,1,10,v=>String(v),v=>{send({group:v});showAddr()})),
     kv("Adresse",h("div",{class:"seg"},segAuto,segFix)),
@@ -503,9 +518,43 @@ function openTube(t){
 }
 
 /* Réglages */
+async function pollWifiScan(setList){
+  for(let i=0;i<20;i++){
+    let r;try{r=await api("GET","/api/wifi/scan")}catch{toast("Passerelle injoignable");return}
+    if(r.scanning){await new Promise(x=>setTimeout(x,500));continue}
+    const nets=(r.networks||[]).slice().sort((a,b)=>(b.rssi??-99)-(a.rssi??-99));
+    setList(nets);return;
+  }
+  toast("Scan trop long");
+}
 function openWifi(){
   const ssid=h("input",{type:"text",placeholder:"Nom du Wi-Fi de la maison",value:S.wifi.ssid||"",autocapitalize:"off",autocomplete:"off"});
   const pass=h("input",{type:"password",placeholder:"Mot de passe"});
+  const knownBox=h("div",{style:"display:flex;flex-direction:column;gap:6px"});
+  const scanBox=h("div",{style:"display:flex;flex-direction:column;gap:6px"});
+  const pick=(s,p="")=>{ssid.value=s;if(p)pass.value=p;pass.focus()};
+  const paintKnown=list=>{
+    knownBox.replaceChildren();
+    if(!list.length){knownBox.append(h("div",{class:"note"},"Aucun réseau mémorisé pour l’instant."));return}
+    for(const k of list){
+      const forget=h("button",{style:"width:44px;height:44px;flex:none;color:var(--bad);border-color:#5a2a2e",
+        onclick:async()=>{if(!confirm(`Oublier « ${k.ssid} » ?`))return;
+          try{await api("POST","/api/settings",{forgetWifi:k.ssid});paintKnown((await api("GET","/api/wifi/known"))||[])}catch{toast("Passerelle injoignable")}}},"×");
+      const use=h("button",{class:"row",style:"flex:1",onclick:()=>pick(k.ssid,k.pass||"")},
+        h("div",{class:"main"},h("div",{class:"t"},k.ssid),h("div",{class:"s"},"Mémorisé · toucher pour remplir")));
+      knownBox.append(h("div",{style:"display:flex;gap:6px;align-items:center"},use,forget));
+    }
+  };
+  const paintScan=nets=>{
+    scanBox.replaceChildren();
+    if(!nets.length){scanBox.append(h("div",{class:"note"},"Aucun réseau trouvé."));return}
+    for(const n of nets){
+      scanBox.append(h("button",{class:"row",onclick:()=>pick(n.ssid)},
+        h("div",{class:"main"},h("div",{class:"t"},n.ssid),
+          h("div",{class:"s"},`Canal ${n.channel} · ${n.rssi} dBm${n.open?" · ouvert":""}`)),
+        h("span",{class:"chev"},"›")));
+    }
+  };
   const rc=S.wifi.routerChannel;
   openSheet("Wi-Fi",
     h("div",{class:"note"},S.wifi.ap?(S.wifi.ssid?`Pas connectée à ${S.wifi.ssid}.`:"Pas de Wi-Fi de la maison."):`Connectée à ${S.wifi.ssid} · ${S.wifi.ip}`),
@@ -514,10 +563,19 @@ function openWifi(){
       if(!confirm(`Passer toutes les barres sur le canal ${rc} ? Réglez ensuite PoulpyNode / Pollux sur le même canal.`))return;
       api("POST","/api/settings",{channel:rc}).catch(()=>{});toast("Les barres passent sur le canal "+rc);closeSheet()}},`Passer les barres sur le canal ${rc}`):null,
     S.wifi.ssid?kv("Barres qui le connaissent",h("span",{},`${S.wifi.shared??"?"} / ${S.tubes.length}`)):null,
+    h("div",{class:"note",style:"margin-top:4px"},"Réseaux mémorisés"),
+    knownBox,
+    h("button",{class:"big",onclick:async()=>{
+      scanBox.replaceChildren(h("div",{class:"note"},"Recherche des réseaux…"));
+      toast("Scan Wi-Fi…");await pollWifiScan(paintScan);
+    }},"Scanner les réseaux"),
+    scanBox,
     ssid,pass,
     h("button",{class:"big accent",onclick:async()=>{S.wifi.ssid=ssid.value;try{await api("POST","/api/settings",{wifiSsid:ssid.value,wifiPass:pass.value})}catch{}
       toast("Enregistré · la passerelle se reconnecte");closeSheet()}},"Enregistrer"),
-    h("div",{class:"note"},"Toutes les barres gardent ce Wi-Fi : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert)."));
+    h("div",{class:"note"},"Toutes les barres gardent le Wi-Fi actif : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Les réseaux enregistrés restent dans la liste pour un rappel rapide. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert)."));
+  if(!DEMO)api("GET","/api/wifi/known").then(paintKnown).catch(()=>paintKnown([]));
+  else paintKnown([{ssid:"Maison",pass:"demo"},{ssid:"Salle",pass:""}]);
 }
 function openGateway(){
   openSheet("Passerelle",
@@ -544,6 +602,15 @@ function openUpdate(){
     kv("Firmware de la passerelle",h("span",{},fw)),
     kv("Barres au même firmware",h("span",{},`${same} / ${S.tubes.length}`)),
     h("div",{class:"note"},"Pour mettre les barres à jour : Pollux, page Lampes, bouton Outils."));
+}
+function openResetWifi(){
+  openSheet("Réinitialiser (tests)",
+    h("div",{class:"note"},"Efface le Wi-Fi de la maison et la liste des réseaux mémorisés sur la passerelle et sur toutes les barres à portée. Les noms, scènes et groupes restent. La passerelle repasse sur le Wi-Fi PoulpyTube."),
+    h("button",{class:"big danger",onclick:async()=>{
+      if(!confirm("Oublier tous les Wi-Fi sur toutes les barres ?"))return;
+      try{await api("POST","/api/settings",{resetWifi:true});S.wifi.ssid="";S.wifi.ap=true;toast("Wi-Fi oubliés · point d’accès PoulpyTube");closeSheet()}
+      catch{toast("Passerelle injoignable")}}},"Tout oublier"),
+    h("div",{class:"note"},"Option temporaire pour les essais. Une barre hors portée devra être remise à zéro plus tard (ou au prochain partage Wi-Fi)."));
 }
 
 /* ---------- Onglets, divers ---------- */

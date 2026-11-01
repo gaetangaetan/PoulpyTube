@@ -48,6 +48,9 @@ const uint8_t MAX_CMDS = 8;
 
 const char* const STATE_FILE = "/state.bin";
 const char* const SCENES_FILE = "/scenes.bin";
+const char* const KNOWN_WIFI_FILE = "/wifi.json";
+const uint8_t KNOWN_WIFI_MAX = 8;
+const uint8_t WIFI_SCAN_MAX = 24;
 
 enum Role : uint8_t { ROLE_TUBE, ROLE_FALLBACK, ROLE_DESIGNATED };
 Role role = ROLE_TUBE;
@@ -81,6 +84,7 @@ struct TubeRow {
   uint8_t src, flags;
   uint8_t look[LOOK_SIZE];
   char fw[17];
+  char name[TUBE_NAME_MAX + 1];
   uint32_t seen;
   uint8_t wifiSum;
   uint32_t wifiSentMs;
@@ -139,6 +143,25 @@ WifiStep wifiStep = W_OFF;
 uint32_t wifiAt = 0;
 int routerChannel = 0;
 
+// Scan Wi-Fi demandé par l'application (asynchrone, hors machine d'état maison).
+enum WifiApiScan : uint8_t { WAS_IDLE, WAS_PENDING, WAS_RUNNING, WAS_DONE };
+WifiApiScan wifiApiScan = WAS_IDLE;
+struct WifiScanHit {
+  char ssid[33];
+  int8_t rssi;
+  uint8_t channel;
+  bool open;
+};
+WifiScanHit wifiScanHits[WIFI_SCAN_MAX];
+uint8_t wifiScanHitCount = 0;
+
+struct KnownWifi {
+  char ssid[33];
+  char pass[65];
+};
+KnownWifi knownWifi[KNOWN_WIFI_MAX];
+uint8_t knownWifiCount = 0;
+
 const uint8_t BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 bool sameMac(const uint8_t* a, const uint8_t* b) { return memcmp(a, b, 6) == 0; }
@@ -151,6 +174,103 @@ uint8_t wifiSum() {
   s ^= 0xA5;
   for (const char* c = settings.wifiPass; *c; c++) s = (uint8_t)((s << 1 | s >> 7) ^ *c);
   return s ? s : 1;
+}
+
+void knownWifiLoad() {
+  knownWifiCount = 0;
+  File f = LittleFS.open(KNOWN_WIFI_FILE, "r");
+  if (!f) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, f)) { f.close(); return; }
+  f.close();
+  for (JsonObject o : doc.as<JsonArray>()) {
+    if (knownWifiCount >= KNOWN_WIFI_MAX) break;
+    const char* ssid = o["ssid"] | "";
+    if (!ssid[0]) continue;
+    KnownWifi& k = knownWifi[knownWifiCount++];
+    memset(&k, 0, sizeof(k));
+    strncpy(k.ssid, ssid, sizeof(k.ssid) - 1);
+    strncpy(k.pass, o["pass"] | "", sizeof(k.pass) - 1);
+  }
+}
+
+void knownWifiSave() {
+  JsonDocument doc;
+  JsonArray a = doc.to<JsonArray>();
+  for (uint8_t i = 0; i < knownWifiCount; i++) {
+    JsonObject o = a.add<JsonObject>();
+    o["ssid"] = knownWifi[i].ssid;
+    o["pass"] = knownWifi[i].pass;
+  }
+  File f = LittleFS.open(KNOWN_WIFI_FILE, "w");
+  if (!f) return;
+  serializeJson(doc, f);
+  f.close();
+}
+
+void knownWifiUpsert(const char* ssid, const char* pass) {
+  if (!ssid || !ssid[0]) return;
+  for (uint8_t i = 0; i < knownWifiCount; i++) {
+    if (!strcmp(knownWifi[i].ssid, ssid)) {
+      strncpy(knownWifi[i].pass, pass ? pass : "", sizeof(knownWifi[i].pass) - 1);
+      knownWifi[i].pass[sizeof(knownWifi[i].pass) - 1] = '\0';
+      // Remonter en tête.
+      KnownWifi tmp = knownWifi[i];
+      for (uint8_t j = i; j > 0; j--) knownWifi[j] = knownWifi[j - 1];
+      knownWifi[0] = tmp;
+      knownWifiSave();
+      return;
+    }
+  }
+  if (knownWifiCount < KNOWN_WIFI_MAX) knownWifiCount++;
+  else knownWifiCount = KNOWN_WIFI_MAX;
+  for (uint8_t j = knownWifiCount - 1; j > 0; j--) knownWifi[j] = knownWifi[j - 1];
+  memset(&knownWifi[0], 0, sizeof(knownWifi[0]));
+  strncpy(knownWifi[0].ssid, ssid, sizeof(knownWifi[0].ssid) - 1);
+  strncpy(knownWifi[0].pass, pass ? pass : "", sizeof(knownWifi[0].pass) - 1);
+  knownWifiSave();
+}
+
+void knownWifiForget(const char* ssid) {
+  if (!ssid || !ssid[0]) return;
+  for (uint8_t i = 0; i < knownWifiCount; i++) {
+    if (strcmp(knownWifi[i].ssid, ssid)) continue;
+    for (uint8_t j = i; j + 1 < knownWifiCount; j++) knownWifi[j] = knownWifi[j + 1];
+    knownWifiCount--;
+    knownWifiSave();
+    return;
+  }
+}
+
+void captureWifiScanHits(int n) {
+  wifiScanHitCount = 0;
+  for (int i = 0; i < n && wifiScanHitCount < WIFI_SCAN_MAX; i++) {
+    String id = WiFi.SSID(i);
+    if (!id.length()) continue;
+    // Déjà listé (plusieurs AP du même SSID) : garder le plus fort.
+    bool dup = false;
+    for (uint8_t k = 0; k < wifiScanHitCount; k++) {
+      if (id == wifiScanHits[k].ssid) {
+        if (WiFi.RSSI(i) > wifiScanHits[k].rssi) {
+          wifiScanHits[k].rssi = WiFi.RSSI(i);
+          wifiScanHits[k].channel = WiFi.channel(i);
+        }
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+    WifiScanHit& h = wifiScanHits[wifiScanHitCount++];
+    memset(&h, 0, sizeof(h));
+    strncpy(h.ssid, id.c_str(), sizeof(h.ssid) - 1);
+    h.rssi = WiFi.RSSI(i);
+    h.channel = WiFi.channel(i);
+#if defined(ESP8266)
+    h.open = WiFi.encryptionType(i) == ENC_TYPE_NONE;
+#else
+    h.open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+#endif
+  }
 }
 
 String macText(const uint8_t* m) {
@@ -175,6 +295,18 @@ void header(struct_dmx_packet& p, uint8_t code, const uint8_t* mac) {
   p.data[2] = SIGNATURE_C;
   p.data[3] = code;
   memcpy(&p.data[CMD_TARGET_MAC], mac ? mac : BROADCAST, 6);
+}
+
+void sendNameConfig(const uint8_t* mac, const char* name) {
+  struct_dmx_packet p;
+  header(p, SET_NAME_CMD, mac);
+  strncpy((char*)p.dmxvalues, name ? name : "", TUBE_NAME_MAX);
+  p.dmxvalues[TUBE_NAME_MAX] = 0;
+  if (mac && sameMac(mac, myMac)) {
+    tubeProcessPacket(p);
+    return;
+  }
+  tubeBroadcast(p);
 }
 
 void put16(uint8_t* d, uint16_t v) {
@@ -343,6 +475,8 @@ void fillOwnStatus(TubeRow& r) {
   memcpy(r.look, autoLookTarget(), LOOK_SIZE);
   strncpy(r.fw, VERSION, sizeof(r.fw) - 1);
   r.fw[sizeof(r.fw) - 1] = '\0';
+  strncpy(r.name, settings.name, sizeof(r.name) - 1);
+  r.name[sizeof(r.name) - 1] = '\0';
 }
 
 void sendStatus() {
@@ -363,6 +497,10 @@ void sendStatus() {
   d[33] = len;
   memcpy(&d[34], r.fw, len);
   d[STATUS_WIFI_SUM] = wifiSum();
+  uint8_t nlen = strlen(r.name);
+  if (nlen > TUBE_NAME_MAX) nlen = TUBE_NAME_MAX;
+  d[STATUS_NAME_LEN] = nlen;
+  memcpy(&d[STATUS_NAME], r.name, nlen);
   tubeBroadcast(p);
 }
 
@@ -372,6 +510,22 @@ void sendWifiConfig(const uint8_t* mac) {
   memcpy(p.dmxvalues, settings.wifiSsid, sizeof(settings.wifiSsid));
   memcpy(p.dmxvalues + WIFI_CONFIG_PASS, settings.wifiPass, sizeof(settings.wifiPass));
   tubeBroadcast(p);
+}
+
+// SSID vide = oublier le Wi-Fi actif et la liste mémorisée (tests).
+void clearLocalWifiMemory() {
+  memset(settings.wifiSsid, 0, sizeof(settings.wifiSsid));
+  memset(settings.wifiPass, 0, sizeof(settings.wifiPass));
+  configSaveSettings(settings);
+  knownWifiCount = 0;
+  knownWifiSave();
+}
+
+void sendWifiClearAll() {
+  struct_dmx_packet p;
+  header(p, WIFI_CONFIG_CMD, nullptr);
+  memset(p.dmxvalues, 0, sizeof(p.dmxvalues));
+  for (int i = 0; i < 3; i++) tubeBroadcast(p);
 }
 
 TubeRow* rowFor(const uint8_t* mac, uint32_t now) {
@@ -634,6 +788,7 @@ void handleTubes() {
     o["mwh"] = r.mwh;
     o["batt"] = r.mwh >= FULL_BATTERY_MWH ? 0 : (int)(100 - r.mwh * 100 / FULL_BATTERY_MWH);
     o["fw"] = r.fw;
+    o["name"] = r.name;
     o["src"] = r.src ? "live" : "auto";
     o["gw"] = (r.flags & STATUS_GATEWAY) != 0;
     int k = findIndiv(r.mac);
@@ -691,6 +846,42 @@ void handleScan() {
   sendOk();
 }
 
+void handleWifiScan() {
+  if (wifiApiScan == WAS_DONE) {
+    JsonDocument doc;
+    doc["scanning"] = false;
+    JsonArray a = doc["networks"].to<JsonArray>();
+    for (uint8_t i = 0; i < wifiScanHitCount; i++) {
+      JsonObject o = a.add<JsonObject>();
+      o["ssid"] = wifiScanHits[i].ssid;
+      o["rssi"] = wifiScanHits[i].rssi;
+      o["channel"] = wifiScanHits[i].channel;
+      o["open"] = wifiScanHits[i].open;
+    }
+    wifiApiScan = WAS_IDLE;
+    sendJson(doc);
+    return;
+  }
+  if (wifiApiScan == WAS_IDLE) {
+    wifiApiScan = WAS_PENDING;
+    wifiScanHitCount = 0;
+  }
+  JsonDocument doc;
+  doc["scanning"] = true;
+  sendJson(doc);
+}
+
+void handleWifiKnown() {
+  JsonDocument doc;
+  JsonArray a = doc.to<JsonArray>();
+  for (uint8_t i = 0; i < knownWifiCount; i++) {
+    JsonObject o = a.add<JsonObject>();
+    o["ssid"] = knownWifi[i].ssid;
+    o["pass"] = knownWifi[i].pass;
+  }
+  sendJson(doc);
+}
+
 void handleTube() {
   JsonDocument doc;
   if (!readBody(doc)) return;
@@ -702,6 +893,29 @@ void handleTube() {
     if (sameMac(rows[i].mac, mac)) row = &rows[i];
 
   if (doc["identify"] | false) queueCmd(IDENTIFY_CMD, mac, pl, 0);
+  if (doc["name"].is<const char*>()) {
+    const char* name = doc["name"].as<const char*>();
+    char cleaned[TUBE_NAME_MAX + 1];
+    memset(cleaned, 0, sizeof(cleaned));
+    strncpy(cleaned, name ? name : "", TUBE_NAME_MAX);
+    if (sameMac(mac, myMac)) {
+      if (strcmp(settings.name, cleaned)) {
+        memcpy(settings.name, cleaned, sizeof(settings.name));
+        configSaveSettings(settings);
+      }
+      if (row) {
+        strncpy(row->name, cleaned, sizeof(row->name) - 1);
+        row->name[sizeof(row->name) - 1] = '\0';
+      }
+    } else {
+      if (row) {
+        strncpy(row->name, cleaned, sizeof(row->name) - 1);
+        row->name[sizeof(row->name) - 1] = '\0';
+      }
+      sendNameConfig(mac, cleaned);
+      sendNameConfig(mac, cleaned);  // répétition : ESP-NOW n'est pas fiable à 100 %
+    }
+  }
   if (doc["group"].is<int>()) {
     int g = doc["group"].as<int>();
     if (g < 1 || g > GROUP_COUNT) return sendError("group");
@@ -748,7 +962,10 @@ void handleSettings() {
   if (doc["wifiSsid"].is<const char*>()) {
     strncpy(settings.wifiSsid, doc["wifiSsid"].as<const char*>(), sizeof(settings.wifiSsid) - 1);
     strncpy(settings.wifiPass, doc["wifiPass"] | "", sizeof(settings.wifiPass) - 1);
+    settings.wifiSsid[sizeof(settings.wifiSsid) - 1] = '\0';
+    settings.wifiPass[sizeof(settings.wifiPass) - 1] = '\0';
     configSaveSettings(settings);
+    if (settings.wifiSsid[0]) knownWifiUpsert(settings.wifiSsid, settings.wifiPass);
     statusRequest = true;  // les barres répondent, celles qui n'ont pas ce Wi-Fi le reçoivent
     lastBeaconSentMs = 0;
     // Laisser partir la réponse avant de lâcher le point d'accès ou de scanner.
@@ -757,6 +974,21 @@ void handleSettings() {
     wifiStep = settings.wifiSsid[0] ? W_WAIT : W_OFF;
     wifiAt = millis() + 1500;
     if (!settings.wifiSsid[0]) apOn();
+  }
+  if (doc["forgetWifi"].is<const char*>()) {
+    knownWifiForget(doc["forgetWifi"].as<const char*>());
+  }
+  // Tests : oublier tous les Wi-Fi (actif + mémorisés) sur la passerelle et toutes les barres.
+  if (doc["resetWifi"] | false) {
+    clearLocalWifiMemory();
+    sendWifiClearAll();
+    statusRequest = true;
+    lastBeaconSentMs = 0;
+    if (wifiStep == W_UP) WiFi.disconnect(false);
+    routerChannel = 0;
+    wifiStep = W_OFF;
+    wifiAt = millis() + 500;
+    apOn();
   }
   if (doc["returnDelay"].is<int>()) {
     int d = doc["returnDelay"].as<int>();
@@ -891,6 +1123,8 @@ void startGateway(Role r) {
   server.on("/api/tubes", HTTP_GET, handleTubes);
   server.on("/api/look", HTTP_POST, handleLook);
   server.on("/api/scan", HTTP_POST, handleScan);
+  server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
+  server.on("/api/wifi/known", HTTP_GET, handleWifiKnown);
   server.on("/api/tube", HTTP_POST, handleTube);
   server.on("/api/settings", HTTP_POST, handleSettings);
   server.on("/api/scenes", HTTP_GET, handleScenesGet);
@@ -932,10 +1166,26 @@ void apOff() {
 // Le Wi-Fi de la maison n'est rejoint que s'il est sur le canal des barres :
 // en changer déplacerait les barres hors du canal de PoulpyNode / PoulpyLink.
 void wifiLoop(uint32_t now) {
+  // Scan demandé par l'UI : uniquement quand la machine d'état n'utilise pas déjà le scan.
+  if (wifiApiScan == WAS_PENDING && wifiStep != W_SCAN && wifiStep != W_CONNECT) {
+    WiFi.scanNetworks(true);
+    wifiApiScan = WAS_RUNNING;
+  }
+  if (wifiApiScan == WAS_RUNNING && wifiStep != W_SCAN) {
+    int n = WiFi.scanComplete();
+    if (n != WIFI_SCAN_RUNNING) {
+      if (n > 0) captureWifiScanHits(n);
+      else wifiScanHitCount = 0;
+      WiFi.scanDelete();
+      wifiApiScan = WAS_DONE;
+    }
+  }
+
   switch (wifiStep) {
     case W_OFF:
       break;
     case W_WAIT:
+      if (wifiApiScan == WAS_PENDING || wifiApiScan == WAS_RUNNING) break;  // laisser finir le scan UI
       if ((int32_t)(now - wifiAt) >= 0) {
         WiFi.scanNetworks(true);
         wifiStep = W_SCAN;
@@ -944,6 +1194,11 @@ void wifiLoop(uint32_t now) {
     case W_SCAN: {
       int n = WiFi.scanComplete();
       if (n == WIFI_SCAN_RUNNING) break;
+      if (wifiApiScan == WAS_PENDING || wifiApiScan == WAS_RUNNING) {
+        if (n > 0) captureWifiScanHits(n);
+        else wifiScanHitCount = 0;
+        wifiApiScan = WAS_DONE;
+      }
       int found = -1;
       for (int i = 0; i < n; i++)
         if (WiFi.SSID(i) == settings.wifiSsid) found = i;
@@ -1004,6 +1259,8 @@ void gatewayBegin() {
   lastBeaconMs = millis();
   fallbackAfterMs = FALLBACK_MS + (myMac[5] % 16) * 500;  // évite que toutes partent ensemble
   nextStatusMs = millis() + 1000 + (myMac[5] % 32) * 50;
+  knownWifiLoad();
+  if (settings.wifiSsid[0]) knownWifiUpsert(settings.wifiSsid, settings.wifiPass);
   if (settings.role == 1) startGateway(ROLE_DESIGNATED);
 }
 
@@ -1091,6 +1348,12 @@ void gatewayOnStatus(const uint8_t* d) {
   r->fw[len] = '\0';
   r->seen = now;
   r->wifiSum = d[STATUS_WIFI_SUM];
+  uint8_t nlen = d[STATUS_NAME_LEN];
+  if (nlen > TUBE_NAME_MAX) nlen = 0;  // ancien firmware : octets hors plage
+  if (nlen && STATUS_NAME + nlen < 100) {
+    memcpy(r->name, &d[STATUS_NAME], nlen);
+    r->name[nlen] = '\0';
+  }
   learnFrom(*r);
   if (settings.wifiSsid[0] && r->wifiSum != wifiSum() && now - r->wifiSentMs > 4000) {
     r->wifiSentMs = now;
@@ -1117,19 +1380,38 @@ void gatewayOnSceneChunk(const uint8_t* d, const uint8_t* v) {
 }
 
 void gatewayOnWifiConfig(const uint8_t* d, const uint8_t* v) {
-  if (!sameMac(&d[CMD_TARGET_MAC], myMac) || role != ROLE_TUBE) return;
+  const bool forMe = sameMac(&d[CMD_TARGET_MAC], myMac) || sameMac(&d[CMD_TARGET_MAC], BROADCAST);
+  if (!forMe || role != ROLE_TUBE) return;
   char ssid[sizeof(settings.wifiSsid)];
   char pass[sizeof(settings.wifiPass)];
   memcpy(ssid, v, sizeof(ssid));
   memcpy(pass, v + WIFI_CONFIG_PASS, sizeof(pass));
   ssid[sizeof(ssid) - 1] = '\0';
   pass[sizeof(pass) - 1] = '\0';
-  if (!ssid[0]) return;
+  if (!ssid[0]) {
+    // Oublier : Wi-Fi actif + liste mémorisée (bouton tests de la passerelle).
+    if (!settings.wifiSsid[0] && knownWifiCount == 0) return;
+    clearLocalWifiMemory();
+    nextStatusMs = millis() + 200;
+    return;
+  }
   if (!strcmp(ssid, settings.wifiSsid) && !strcmp(pass, settings.wifiPass)) return;
   memcpy(settings.wifiSsid, ssid, sizeof(ssid));
   memcpy(settings.wifiPass, pass, sizeof(pass));
   configSaveSettings(settings);
+  knownWifiUpsert(ssid, pass);
   nextStatusMs = millis() + 200;  // confirmer à la passerelle
+}
+
+void gatewayOnSetName(const uint8_t* d, const uint8_t* v) {
+  if (!sameMac(&d[CMD_TARGET_MAC], myMac)) return;
+  char name[TUBE_NAME_MAX + 1];
+  memset(name, 0, sizeof(name));
+  strncpy(name, (const char*)v, TUBE_NAME_MAX);
+  if (!strcmp(name, settings.name)) return;
+  memcpy(settings.name, name, sizeof(settings.name));
+  configSaveSettings(settings);
+  nextStatusMs = millis() + 200;
 }
 
 void gatewayLoop(unsigned long now) {

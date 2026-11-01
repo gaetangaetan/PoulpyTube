@@ -62,8 +62,8 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 
 ### Wi-Fi
 
-- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application, ou repris de la dernière mise à jour OTA envoyée par Pollux si la barre n'en a pas).
-- **Partagé** : la passerelle donne ce Wi-Fi à toutes les barres (`WIFI_CONFIG`, seulement à celles dont l'empreinte dans `TUBE_STATUS` diffère). Chacune le garde en EEPROM : la barre qui devient passerelle rejoint la maison toute seule.
+- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application, ou repris de la dernière mise à jour OTA envoyée par Pollux si la barre n'en a pas). Un seul Wi-Fi **actif** à la fois ; jusqu'à 8 réseaux **mémorisés** (LittleFS `/wifi.json`) pour un rappel rapide dans l'UI. **Réinitialiser (tests)** : `POST /api/settings` `{ "resetWifi": true }` efface le Wi-Fi actif et la liste mémorisée sur la passerelle et diffuse un `WIFI_CONFIG` vide à toutes les barres ; la passerelle rouvre `PoulpyTube`.
+- **Partagé** : la passerelle donne le Wi-Fi actif à toutes les barres (`WIFI_CONFIG`, seulement à celles dont l'empreinte dans `TUBE_STATUS` diffère). Chacune le garde en EEPROM : la barre qui devient passerelle rejoint la maison toute seule.
 - **Secours** : si la maison n'est pas joignable (pas de réglage, introuvable, autre canal, ou 20 s sans succès), la passerelle ouvre le Wi-Fi `PoulpyTube`, ouvert. Même nom pour toutes les barres : le téléphone ne voit qu'un réseau. Elle retente la maison toutes les 2 minutes ; connectée, elle coupe ce point d'accès.
 - **Adresse** : `poulpytube.local`.
   - Sur son propre Wi-Fi : la passerelle répond elle-même aux noms (DNS local), à `192.168.4.1`. Toute adresse mène à la page, qui s'ouvre souvent toute seule à la connexion.
@@ -80,16 +80,17 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 
 ## 6. Protocole radio
 
-Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, commandes `blockNumber = 255`, code en `data[3]`, MAC cible en `data[4..9]`, charge utile dès `data[10]`). Toutes les commandes existantes restent. Six commandes nouvelles :
+Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, commandes `blockNumber = 255`, code en `data[3]`, MAC cible en `data[4..9]`, charge utile dès `data[10]`). Toutes les commandes existantes restent. Sept commandes nouvelles :
 
 | Code | Nom | Charge utile (`data[10…]`) |
 |---|---|---|
 | `0xC0` | `LOOK` | masque de groupes (2 octets, `0xFFFF` = toutes) ou MAC cible en `data[4..9]` ; look (10 octets) ; fondu en ms (2 octets) ; numéro de version de l'état (2 octets) ; drapeau « mémoriser » |
 | `0xC1` | `GATEWAY_BEACON` | horloge de la passerelle en ms (4 octets) ; version de l'état (2 octets) ; canal ; drapeaux (désignée / secours) |
 | `0xC2` | `SET_ROLE` | MAC cible ; rôle (0 = barre, 1 = passerelle) ; délai de retour du live en s |
-| `0xC3` | `TUBE_STATUS` | barre → passerelle : groupe, adresse, LEDs, limite W, mWh, source, drapeaux, look autonome, firmware ; `data[50]` empreinte du Wi-Fi |
+| `0xC3` | `TUBE_STATUS` | barre → passerelle : groupe, adresse, LEDs, limite W, mWh, source, drapeaux, look autonome, firmware ; `data[50]` empreinte du Wi-Fi ; `data[51]` longueur du nom, `data[52…]` nom (≤ 24) |
 | `0xC4` | `WIFI_CONFIG` | MAC cible ; `dmxvalues[0..32]` SSID, `[33..97]` mot de passe |
 | `0xC5` | `SCENE_CHUNK` | numéro du morceau ; taille du fichier (2 octets) ; `dmxvalues` = 128 octets du fichier des scènes |
+| `0xC6` | `SET_NAME` | MAC cible ; `dmxvalues[0..24]` nom (EEPROM, suit la barre) |
 
 Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 
@@ -111,8 +112,8 @@ Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 
 1. **Jouer** : les groupes en grandes tuiles avec aperçu animé, plus une tuile « Toutes ». Toucher un groupe ouvre un panneau : 12 couleurs, teinte, intensité, look, vitesse, largeur.
 2. **Scènes** : 20 emplacements. Toucher = rappeler (ou enregistrer si vide), appui long = renommer, fondu, remplacer, effacer.
-3. **Barres** : liste des barres trouvées. Toucher une barre : clignoter, groupe, adresse (Groupe / Fixe), LEDs, limite en watts, batterie, look individuel, en faire la passerelle.
-4. **Réglages** : Wi-Fi de la maison, passerelle, délai de retour du live, canal, sauvegarde, mise à jour du firmware des barres.
+3. **Barres** : liste des barres trouvées (nom si donné, sinon fin de MAC). Toucher = réglages (nom, clignoter, groupe, adresse, LEDs, limite, look, passerelle). Appui long (~1 s) = faire clignoter sans ouvrir le panneau.
+4. **Réglages** : Wi-Fi de la maison (scan des SSID, liste des réseaux mémorisés, un Wi-Fi actif partagé aux barres), passerelle, délai de retour du live, canal, sauvegarde, mise à jour du firmware des barres.
 
 ### Scènes
 
@@ -140,8 +141,10 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 | POST | `/api/look` | `{ "groups": [1,2] \| "mac": "…", "look": [10 octets], "fadeMs": 500 }` |
 | GET | `/api/tubes` | barres entendues |
 | POST | `/api/scan` | relance un scan |
-| POST | `/api/tube` | `{ "mac": "…", "group" \| "address" \| "leds" \| "wattLimit" \| "identify" }` |
-| POST | `/api/settings` | Wi-Fi, délai de retour, canal, nom |
+| POST | `/api/tube` | `{ "mac": "…", "name" \| "group" \| "address" \| "leds" \| "wattLimit" \| "identify" }` |
+| GET | `/api/wifi/scan` | asynchrone : `{ "scanning": true }` puis `{ "scanning": false, "networks": [{ssid,rssi,channel,open}] }` |
+| GET | `/api/wifi/known` | réseaux mémorisés `[{ssid,pass}]` (≤ 8) |
+| POST | `/api/settings` | Wi-Fi actif, `forgetWifi`, `resetWifi` (tests : oublier Wi-Fi sur toutes les barres), délai de retour, canal |
 | GET | `/api/scenes` | les scènes enregistrées |
 | POST | `/api/scenes` | `{ "slot", "name", "fadeMs" }` : enregistre l'état actuel |
 | POST | `/api/scenes/meta` | renomme ou change le fondu |

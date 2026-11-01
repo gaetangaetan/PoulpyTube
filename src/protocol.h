@@ -85,6 +85,8 @@ typedef struct struct_dmx_packet {
 #define STATUS_INDIVIDUAL  0x01
 #define STATUS_GATEWAY     0x02
 #define STATUS_WIFI_SUM    50    // empreinte du Wi-Fi de la maison enregistré (0 = aucun)
+#define STATUS_NAME_LEN    51    // longueur du nom (0..24), octets à partir de STATUS_NAME
+#define STATUS_NAME        52
 
 // WIFI_CONFIG (passerelle → barre) : data[4..9] MAC cible ; dmxvalues[0..32] nom, [33..97] mot de passe.
 // Chaque barre garde le Wi-Fi : celle qui devient passerelle sait rejoindre la maison.
@@ -94,6 +96,9 @@ typedef struct struct_dmx_packet {
 // SCENE_CHUNK (passerelle → toutes, en continu) : data[10] numéro du morceau de 128 octets,
 // [11..12] taille du fichier de scènes ; dmxvalues = le morceau. Chaque barre garde une copie.
 #define SCENE_CHUNK_CMD    0xC5
+
+// SET_NAME (passerelle → barre) : data[4..9] MAC cible ; dmxvalues[0..24] nom (chaîne C).
+#define SET_NAME_CMD       0xC6
 
 // Tube → émetteur
 #define RESPONSE_MAC_CMD         0xFC
@@ -115,7 +120,7 @@ inline bool isCommandCode(uint8_t c) {
       || c == ENTER_REMOTE_SETUP_CMD || c == EXIT_REMOTE_SETUP_CMD
       || c == SET_GROUP_NUMBER_CMD || c == PANIC_RESTART_CMD
       || c == ANIMATION_TRIGGER_CMD
-      || (c >= LOOK_CMD && c <= SCENE_CHUNK_CMD)
+      || (c >= LOOK_CMD && c <= SET_NAME_CMD)
       || (c >= 0xE0 && c <= 0xEF) || c == RESET_ENERGY_CMD || c == SET_POWER_LIMIT_CMD;
 }
 
