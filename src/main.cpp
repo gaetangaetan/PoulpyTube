@@ -764,6 +764,11 @@ void setup() {
 #endif
   WiFi.persistent(false);  // la passerelle gère son Wi-Fi elle-même, rien en flash
   WiFi.mode(WIFI_STA);
+#if defined(ESP8266)
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);  // connectée à la maison, la veille radio fait rater le flux ESP-NOW
+#else
+  WiFi.setSleep(false);
+#endif
   WiFi.macAddress(myMac);
   Serial.printf("MAC %s | groupe %d | adresse %d | %d LEDs\n",
                 WiFi.macAddress().c_str(), setupTubeNumber + 1, setupAddress, ledCount);

@@ -1578,9 +1578,11 @@ void gatewayLoop(unsigned long now) {
 #endif
   wifiLoop(now);
 
+  // Pendant le live, les looks autonomes ne se voient pas : laisser l'air au flux.
+  const bool live = tubeIsLive();
   if (now - lastBeaconSentMs >= BEACON_MS) {
     sendBeacon(now);
-    rebroadcast();
+    if (!live) rebroadcast();
     TubeRow* own = rowFor(myMac, now);
     fillOwnStatus(*own);
     own->seen = now;
@@ -1588,7 +1590,7 @@ void gatewayLoop(unsigned long now) {
     expireRows(now);
   }
   pumpSends(now);
-  pumpSceneChunk(now);
+  if (!live) pumpSceneChunk(now);
 
   if (stateDirty && now - stateDirtyAt > SAVE_DELAY_MS) saveState();
 }
