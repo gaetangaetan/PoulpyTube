@@ -539,7 +539,9 @@ static uint16_t renderFrame(unsigned long now) {
   const uint8_t seed = (uint8_t)(effectiveAddress() * 16);
   if (last) {
     const unsigned long hold = settings.returnDelayS * 1000UL;
-    const unsigned long age = now - last;
+    // Un paquet reçu depuis la lecture de `now` est plus récent que now : âge négatif, pas énorme.
+    const long signedAge = (long)(now - last);
+    const unsigned long age = signedAge < 0 ? 0 : (unsigned long)signedAge;
     if (age < hold) return renderLive();
     if (age < hold + RETURN_FADE_MS) {
       renderLive();
