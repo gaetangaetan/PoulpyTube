@@ -21,6 +21,21 @@ Un look = les 10 octets du slot PoulpyTube actuel (type Pollux `…00B1`), incha
 | 9 | Extra 2 (aujourd'hui ignoré, sera rendu) |
 | 10 | **Déclencheur** (proposition) : chaque changement de valeur relance l'animation depuis le début. Sert aux retriggers MIDI. |
 
+Sens réel des canaux 5 à 8 selon le look (`renderLook`), tel que l'app web les nomme :
+
+| Look | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|
+| Uni | – | – | – | – |
+| Arc-en-ciel | Sens (128–148 = arrêt) | Étalement | – | – |
+| Paillettes | Fréquence | Densité | (fréquence en plus, laissé à 0) | – |
+| Flicker | Éclairs blancs | Fond (niveau éteint) | Allumé (part du temps) | – |
+| Wipe | Vitesse | Longueur | – | Variation |
+| Respire | Vitesse | Plancher | (phase, laissé à 0) | – |
+| Croisement | Vitesse | Longueur | 2e couleur (teinte FastLED, 0 = blanc) | Variation |
+| Chase | Vitesse | Longueur | Écart | Variation |
+
+L'app n'affiche que les réglages du look choisi. Changer de look remet ses valeurs par défaut et met à 0 les canaux qu'il n'utilise pas. Chaque look a des presets (`LOOK_PRESETS` dans `web/index.html`), affichés avec un aperçu animé qui reprend le calcul du firmware.
+
 Changements par rapport à aujourd'hui :
 
 - Les animations sont calculées **d'après l'horloge** (millisecondes), plus d'après le nombre d'images. Une vitesse donne le même résultat quelle que soit la charge.
