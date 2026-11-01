@@ -6,12 +6,14 @@
 #include <LittleFS.h>
 
 #if defined(ESP8266)
+#include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <espnow.h>
 using WebServerT = ESP8266WebServer;
 #else
+#include <HTTPClient.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -49,8 +51,13 @@ const uint8_t MAX_CMDS = 8;
 const char* const STATE_FILE = "/state.bin";
 const char* const SCENES_FILE = "/scenes.bin";
 const char* const KNOWN_WIFI_FILE = "/wifi.json";
+const char* const FIRMWARE_CATALOG_URL =
+    "http://poulpylights.gaetanstreel.com/firmware/receiver/catalog.txt";
+const char* const FIRMWARE_BASE_URL =
+    "http://poulpylights.gaetanstreel.com/firmware/receiver";
 const uint8_t KNOWN_WIFI_MAX = 8;
 const uint8_t WIFI_SCAN_MAX = 24;
+const uint8_t FIRMWARE_CACHE_MAX = 16;
 
 enum Role : uint8_t { ROLE_TUBE, ROLE_FALLBACK, ROLE_DESIGNATED };
 Role role = ROLE_TUBE;
@@ -161,6 +168,15 @@ struct KnownWifi {
 };
 KnownWifi knownWifi[KNOWN_WIFI_MAX];
 uint8_t knownWifiCount = 0;
+
+struct FirmwareRelease {
+  char version[16];
+  char date[28];
+  char note[96];
+};
+FirmwareRelease firmwareCache[FIRMWARE_CACHE_MAX];
+uint8_t firmwareCacheCount = 0;
+uint32_t firmwareCacheAt = 0;
 
 const uint8_t BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -528,6 +544,87 @@ void sendWifiClearAll() {
   for (int i = 0; i < 3; i++) tubeBroadcast(p);
 }
 
+// Même format que PoulpyNode : SSID/mot de passe dans data[], URL dans dmxvalues[].
+// La destination ESP-NOW cible une MAC (ou diffusion) ; pas de MAC dans le payload OTA.
+bool buildOtaPacket(struct_dmx_packet& p, const char* ssid, const char* pass, const char* url) {
+  memset(&p, 0, sizeof(p));
+  p.blockNumber = CMD_BLOCK;
+  p.data[0] = SIGNATURE_A;
+  p.data[1] = SIGNATURE_B;
+  p.data[2] = SIGNATURE_C;
+  p.data[3] = OTA_UPDATE_CMD;
+  size_t ssidLen = ssid ? strlen(ssid) : 0;
+  size_t passLen = pass ? strlen(pass) : 0;
+  size_t urlLen = url ? strlen(url) : 0;
+  if (ssidLen == 0 || ssidLen > 32 || passLen > 63 || urlLen < 8 || urlLen > 127) return false;
+  if (6 + ssidLen + passLen > sizeof(p.data)) return false;
+  p.data[4] = (uint8_t)ssidLen;
+  memcpy(&p.data[5], ssid, ssidLen);
+  p.data[5 + ssidLen] = (uint8_t)passLen;
+  if (passLen) memcpy(&p.data[6 + ssidLen], pass, passLen);
+  memcpy(p.dmxvalues, url, urlLen);
+  return true;
+}
+
+void sendOtaUpdate(const uint8_t* mac, const char* ssid, const char* pass, const char* url) {
+  struct_dmx_packet p;
+  if (!buildOtaPacket(p, ssid, pass, url)) return;
+  const bool all = !mac || sameMac(mac, BROADCAST);
+  const bool self = all || sameMac(mac, myMac);
+  // D'abord les autres barres : handleOTAUpdate redémarre la passerelle en 300 ms.
+  for (int i = 0; i < 3; i++) {
+    if (all) tubeBroadcast(p);
+    else tubeSendTo(mac, p);
+  }
+  if (self) tubeProcessPacket(p);
+}
+
+bool fetchFirmwareCatalog() {
+  if (wifiStep != W_UP) return false;
+  if (firmwareCacheCount && millis() - firmwareCacheAt < 60000UL) return true;
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(8000);
+  if (!http.begin(client, FIRMWARE_CATALOG_URL)) return false;
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+  firmwareCacheCount = 0;
+  int start = 0;
+  while (start < (int)body.length() && firmwareCacheCount < FIRMWARE_CACHE_MAX) {
+    int end = body.indexOf('\n', start);
+    if (end < 0) end = body.length();
+    String line = body.substring(start, end);
+    line.trim();
+    start = end + 1;
+    if (!line.length() || line[0] == '#') continue;
+    int p1 = line.indexOf('|');
+    int p2 = p1 >= 0 ? line.indexOf('|', p1 + 1) : -1;
+    String ver = p1 >= 0 ? line.substring(0, p1) : line;
+    ver.trim();
+    if (!ver.length() || ver.length() >= (int)sizeof(firmwareCache[0].version)) continue;
+    FirmwareRelease& r = firmwareCache[firmwareCacheCount++];
+    memset(&r, 0, sizeof(r));
+    strncpy(r.version, ver.c_str(), sizeof(r.version) - 1);
+    if (p1 >= 0) {
+      String date = p2 >= 0 ? line.substring(p1 + 1, p2) : line.substring(p1 + 1);
+      date.trim();
+      strncpy(r.date, date.c_str(), sizeof(r.date) - 1);
+    }
+    if (p2 >= 0) {
+      String note = line.substring(p2 + 1);
+      note.trim();
+      strncpy(r.note, note.c_str(), sizeof(r.note) - 1);
+    }
+  }
+  firmwareCacheAt = millis();
+  return firmwareCacheCount > 0;
+}
+
 TubeRow* rowFor(const uint8_t* mac, uint32_t now) {
   for (uint8_t i = 0; i < rowCount; i++)
     if (sameMac(rows[i].mac, mac)) return &rows[i];
@@ -882,6 +979,51 @@ void handleWifiKnown() {
   sendJson(doc);
 }
 
+void handleFirmwareCatalog() {
+  JsonDocument doc;
+  if (!fetchFirmwareCatalog()) {
+    doc["ok"] = false;
+    doc["error"] = wifiStep == W_UP ? "catalog" : "wifi";
+    doc["hint"] = wifiStep == W_UP
+                      ? "Catalogue injoignable."
+                      : "La passerelle doit être sur le Wi-Fi de la maison pour lire le catalogue.";
+    sendJson(doc);
+    return;
+  }
+  doc["ok"] = true;
+  doc["base"] = FIRMWARE_BASE_URL;
+  JsonArray a = doc["releases"].to<JsonArray>();
+  for (uint8_t i = 0; i < firmwareCacheCount; i++) {
+    JsonObject o = a.add<JsonObject>();
+    o["version"] = firmwareCache[i].version;
+    o["date"] = firmwareCache[i].date;
+    o["note"] = firmwareCache[i].note;
+    char url[180];
+    snprintf(url, sizeof(url), "%s/%s/firmware.bin", FIRMWARE_BASE_URL, firmwareCache[i].version);
+    o["url"] = url;
+  }
+  sendJson(doc);
+}
+
+void handleOta() {
+  JsonDocument doc;
+  if (!readBody(doc)) return;
+  const char* url = doc["url"] | "";
+  const char* ssid = doc["ssid"] | settings.wifiSsid;
+  const char* pass = doc["pass"] | settings.wifiPass;
+  if (!ssid[0]) return sendError("wifi");
+  if (!url[0] || strlen(url) < 8) return sendError("url");
+  uint8_t mac[6];
+  const char* macStr = doc["mac"] | "";
+  if (macStr[0]) {
+    if (!parseMac(macStr, mac)) return sendError("mac");
+    sendOtaUpdate(mac, ssid, pass, url);
+  } else {
+    sendOtaUpdate(nullptr, ssid, pass, url);  // toutes les barres + passerelle
+  }
+  sendOk();
+}
+
 void handleTube() {
   JsonDocument doc;
   if (!readBody(doc)) return;
@@ -1125,6 +1267,8 @@ void startGateway(Role r) {
   server.on("/api/scan", HTTP_POST, handleScan);
   server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
   server.on("/api/wifi/known", HTTP_GET, handleWifiKnown);
+  server.on("/api/firmware/catalog", HTTP_GET, handleFirmwareCatalog);
+  server.on("/api/ota", HTTP_POST, handleOta);
   server.on("/api/tube", HTTP_POST, handleTube);
   server.on("/api/settings", HTTP_POST, handleSettings);
   server.on("/api/scenes", HTTP_GET, handleScenesGet);

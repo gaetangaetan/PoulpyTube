@@ -18,6 +18,8 @@ extern TubeSettings settings;
 void tubeProcessPacket(const struct_dmx_packet& p);
 // Diffuse un paquet ESP-NOW.
 void tubeBroadcast(const struct_dmx_packet& p);
+// Envoi vers une MAC (ajoute le pair si besoin). nullptr ou FF… = diffusion.
+void tubeSendTo(const uint8_t* mac, const struct_dmx_packet& p);
 // Vrai tant que le flux live n'a pas dépassé le délai de retour.
 bool tubeIsLive();
 // Enregistre settings en EEPROM quelques secondes après le dernier changement.

@@ -113,7 +113,7 @@ Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 1. **Jouer** : les groupes en grandes tuiles avec aperçu animé, plus une tuile « Toutes ». Toucher un groupe ouvre un panneau : 12 couleurs, teinte, intensité, look, vitesse, largeur.
 2. **Scènes** : 20 emplacements. Toucher = rappeler (ou enregistrer si vide), appui long = renommer, fondu, remplacer, effacer.
 3. **Barres** : liste des barres trouvées (nom si donné, sinon fin de MAC). Toucher = réglages (nom, clignoter, groupe, adresse, LEDs, limite, look, passerelle). Appui long (~1 s) = faire clignoter sans ouvrir le panneau.
-4. **Réglages** : Wi-Fi de la maison (scan des SSID, liste des réseaux mémorisés, un Wi-Fi actif partagé aux barres), passerelle, délai de retour du live, canal, sauvegarde, mise à jour du firmware des barres.
+4. **Réglages** : Wi-Fi de la maison (scan des SSID, liste des réseaux mémorisés, un Wi-Fi actif partagé aux barres), passerelle, délai de retour du live, canal, sauvegarde, **mises à jour** (catalogue + OTA depuis le téléphone, même flux `0xFA` que Pollux / PoulpyNode).
 
 ### Scènes
 
@@ -144,6 +144,8 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 | POST | `/api/tube` | `{ "mac": "…", "name" \| "group" \| "address" \| "leds" \| "wattLimit" \| "identify" }` |
 | GET | `/api/wifi/scan` | asynchrone : `{ "scanning": true }` puis `{ "scanning": false, "networks": [{ssid,rssi,channel,open}] }` |
 | GET | `/api/wifi/known` | réseaux mémorisés `[{ssid,pass}]` (≤ 8) |
+| GET | `/api/firmware/catalog` | catalogue HTTP (passerelle sur le Wi-Fi maison) : `{ ok, releases:[{version,date,note,url}] }` |
+| POST | `/api/ota` | `{ "url", "mac"? }` — OTA `0xFA` (SSID/pass = Wi-Fi maison) ; sans `mac` = toutes + passerelle |
 | POST | `/api/settings` | Wi-Fi actif, `forgetWifi`, `resetWifi` (tests : oublier Wi-Fi sur toutes les barres), délai de retour, canal |
 | GET | `/api/scenes` | les scènes enregistrées |
 | POST | `/api/scenes` | `{ "slot", "name", "fadeMs" }` : enregistre l'état actuel |

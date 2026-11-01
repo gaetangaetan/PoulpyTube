@@ -572,6 +572,18 @@ void tubeBroadcast(const struct_dmx_packet& p) {
   esp_now_send(broadcastAddress, (uint8_t*)&p, sizeof(struct_dmx_packet));
 }
 
+void tubeSendTo(const uint8_t* mac, const struct_dmx_packet& p) {
+  if (!mac || memcmp(mac, broadcastAddress, 6) == 0) {
+    tubeBroadcast(p);
+    return;
+  }
+  uint8_t* target = broadcastAddress;
+  if (esp_now_is_peer_exist((uint8_t*)mac)
+      || esp_now_add_peer((uint8_t*)mac, ESP_NOW_ROLE_COMBO, detectedChannel, NULL, 0) == 0)
+    target = (uint8_t*)mac;
+  esp_now_send(target, (uint8_t*)&p, sizeof(struct_dmx_packet));
+}
+
 bool tubeIsLive() {
   const unsigned long last = lastLiveMs;
   return last && millis() - last < settings.returnDelayS * 1000UL;

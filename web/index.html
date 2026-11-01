@@ -76,6 +76,7 @@ nav button.on{color:var(--accent)}
 .row .s{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .r{font-size:13px;color:var(--dim);text-align:right}
 .row .gw{color:var(--accent);font-size:11px;margin-left:6px}
+.row.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .bar-actions{display:flex;gap:8px;margin-top:10px}
 .bar-actions button{flex:1;height:48px}
 
@@ -514,6 +515,7 @@ function openTube(t){
       t.gw?null:h("button",{class:"big",onclick:()=>{switchingFrom=S.gateway.mac;
         api("POST","/api/tube",{mac:t.mac,role:"gateway"}).catch(()=>{});closeSheet();
         lost=true;$("#lost").hidden=false;toast("Nouvelle passerelle : "+tubeName(t)+" · la page revient toute seule")}},"Passerelle")),
+    h("button",{class:"big",onclick:()=>{closeSheet();openUpdate(t.mac)}},"Mettre à jour cette barre…"),
     h("div",{class:"note"},`${t.mac} · firmware ${t.fw}${t.gw?" · passerelle":""}`));
 }
 
@@ -595,13 +597,56 @@ function openChannel(){
     h("div",{class:"note"},"Toutes les barres passent sur ce canal. Pollux et le PoulpyNode doivent être sur le même."),
     h("button",{class:"big accent",onclick:()=>{api("POST","/api/settings",{channel:S.wifi.channel}).catch(()=>{});toast("Canal diffusé aux barres");closeSheet()}},"Diffuser aux barres"));
 }
-function openUpdate(){
+function openUpdate(onlyMac){
   const fw=S.fw||"?";
   const same=S.tubes.filter(t=>t.fw===fw).length;
-  openSheet("Mises à jour",
-    kv("Firmware de la passerelle",h("span",{},fw)),
-    kv("Barres au même firmware",h("span",{},`${same} / ${S.tubes.length}`)),
-    h("div",{class:"note"},"Pour mettre les barres à jour : Pollux, page Lampes, bouton Outils."));
+  const focus=onlyMac?S.tubes.find(t=>t.mac===onlyMac):null;
+  let selected=null;
+  const list=h("div",{style:"display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow:auto"});
+  const status=h("div",{class:"note"},"Chargement du catalogue…");
+  const paint=(releases)=>{
+    list.replaceChildren();
+    if(!releases?.length){list.append(h("div",{class:"note"},"Aucune version."));return}
+    selected=releases[0];
+    for(const r of releases){
+      const mine=focus?r.version===focus.fw:r.version===fw;
+      const btn=h("button",{class:"row"+(r===selected?" on":""),onclick:()=>{
+        selected=r;list.querySelectorAll(".row").forEach(x=>x.classList.toggle("on",x===btn))}},
+        h("div",{class:"main"},
+          h("div",{class:"t"},r.version+(mine?" · actuel":"")),
+          h("div",{class:"s"},(r.note||r.date||"").slice(0,90))));
+      list.append(btn);
+    }
+  };
+  const needWifi=()=>{if(!S.wifi.ssid){toast("Enregistrez d’abord le Wi-Fi de la maison");return false}return true};
+  const startOta=async(mac)=>{
+    if(!selected?.url)return toast("Choisissez une version");
+    if(!needWifi())return;
+    const who=mac?tubeName(S.tubes.find(t=>t.mac===mac)||{mac}):"toutes les barres";
+    if(!confirm(`Installer ${selected.version} sur ${who} ?\nLes barres rejoignent ${S.wifi.ssid}, téléchargent, puis redémarrent (~1 min).`))return;
+    try{
+      await api("POST","/api/ota",{url:selected.url,mac:mac||undefined});
+      toast(mac?"Mise à jour lancée":"Mise à jour lancée sur toutes");
+      closeSheet();
+    }catch{toast("Passerelle injoignable")}
+  };
+  openSheet(focus?("Firmware · "+tubeName(focus)):"Mises à jour",
+    focus?kv("Firmware actuel",h("span",{},focus.fw||"?")):kv("Firmware de la passerelle",h("span",{},fw)),
+    focus?null:kv("Barres au même firmware",h("span",{},`${same} / ${S.tubes.length}`)),
+    status,list,
+    focus
+      ?h("button",{class:"big accent",onclick:()=>startOta(focus.mac)},"Mettre à jour cette barre")
+      :h("button",{class:"big accent",onclick:()=>startOta(null)},"Mettre à jour toutes les barres"),
+    h("div",{class:"note"},"La passerelle lit le catalogue sur internet (Wi-Fi de la maison). Chaque barre utilise ce même Wi-Fi pour télécharger."));
+  (async()=>{
+    if(DEMO){status.textContent="Démo";paint([{version:"261101-1913",note:"Dernière (démo)",url:"http://example/firmware.bin"},{version:"261029-1255",note:"Précédente",url:"http://example/old.bin"}]);return}
+    try{
+      const r=await api("GET","/api/firmware/catalog");
+      if(!r?.ok){status.textContent=r?.hint||"Catalogue indisponible";paint([]);return}
+      status.textContent=`${r.releases.length} version${r.releases.length>1?"s":""} · la plus récente en haut`;
+      paint(r.releases);
+    }catch{status.textContent="Passerelle injoignable";paint([])}
+  })();
 }
 function openResetWifi(){
   openSheet("Réinitialiser (tests)",
