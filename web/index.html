@@ -113,6 +113,29 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:30px;heigh
 input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:var(--accent);border:0}
 .hue::-webkit-slider-runnable-track{background:linear-gradient(90deg,red,#ff0,lime,cyan,blue,#f0f,red)!important}
 .hue::-moz-range-track{background:linear-gradient(90deg,red,#ff0,lime,cyan,blue,#f0f,red)!important}
+.hue2::-webkit-slider-runnable-track{background:linear-gradient(90deg,#fff 0 3%,red 3%,#ff0,lime,cyan,blue,#f0f,red)!important}
+.hue2::-moz-range-track{background:linear-gradient(90deg,#fff 0 3%,red 3%,#ff0,lime,cyan,blue,#f0f,red)!important}
+.sheet-scroll{display:flex;flex-direction:column;gap:12px;overflow-y:auto;min-height:0;margin:0 -14px;padding:0 14px 4px}
+.sheet-prev{height:26px;border-radius:8px;width:100%;display:block;flex:none}
+.presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.preset{display:flex;flex-direction:column;gap:5px;padding:6px;height:auto;text-align:left;overflow:hidden}
+.preset canvas{width:100%;height:18px;border-radius:5px;display:block}
+.preset span{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.params{display:flex;flex-direction:column;gap:2px}
+.params:empty{display:none}
+.wline{display:flex;gap:8px}
+.wsel{flex:1;min-width:0;height:50px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);padding:0 12px;font:inherit;font-size:16px}
+.scanbtn{width:50px;height:50px;font-size:22px;flex:none}
+.scanbtn.spin{animation:spin 1s linear infinite;opacity:.7}
+@keyframes spin{to{transform:rotate(360deg)}}
+.wpick{padding:10px 12px;border-radius:12px;border:1px solid var(--accent);background:#2a2216}
+.wpick .t{font-weight:700;font-size:17px;word-break:break-all}
+.wpick .s{font-size:12px;color:var(--dim);margin-top:2px}
+.passrow{display:flex;gap:8px}
+.passrow input{flex:1;min-width:0;font-size:16px}
+.eye{flex:none;height:46px;padding:0 12px;font-size:13px}
+.wknown summary{color:var(--dim);font-size:13px;padding:8px 0;cursor:pointer}
+input[hidden],div[hidden]{display:none!important}
 
 .kv{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;min-height:48px}
 .kv .k{color:var(--dim);font-size:14px}
@@ -173,7 +196,39 @@ const h=(tag,attrs={},...kids)=>{const e=document.createElement(tag);
 
 /* Looks : bandes de 32 sur le canal 4 */
 const LOOKS=["Uni","Arc-en-ciel","Paillettes","Flicker","Wipe","Respire","Croisement","Chase"];
-const LOOK_USES=[[0,0],[1,0],[1,1],[1,1],[1,0],[1,0],[1,1],[1,1]]; // [vitesse, largeur]
+// Réglages affichés par look : canal du slot (4 vitesse, 5 largeur, 6 extra, 7 aléatoire), nom, défaut.
+// Un canal absent de la liste est remis à 0 quand on choisit le look (il n'hérite plus du look précédent).
+const RAINBOW_STOP=138;
+const LOOK_PARAMS=[
+  [],
+  [{ch:4,name:"Sens",def:170,kind:"dir"},{ch:5,name:"Étalement",def:60}],
+  [{ch:5,name:"Densité",def:90},{ch:4,name:"Fréquence",def:120}],
+  [{ch:6,name:"Allumé",def:200},{ch:5,name:"Fond",def:60},{ch:4,name:"Éclairs",def:0}],
+  [{ch:4,name:"Vitesse",def:90},{ch:5,name:"Longueur",def:60},{ch:7,name:"Variation",def:0}],
+  [{ch:4,name:"Vitesse",def:70},{ch:5,name:"Plancher",def:30}],
+  [{ch:6,name:"2e couleur",def:0,kind:"hue2"},{ch:4,name:"Vitesse",def:110},{ch:5,name:"Longueur",def:40},{ch:7,name:"Variation",def:0}],
+  [{ch:4,name:"Vitesse",def:110},{ch:5,name:"Longueur",def:30},{ch:6,name:"Écart",def:60},{ch:7,name:"Variation",def:0}],
+];
+// Presets : couleur pleine + réglages ; les canaux non cités prennent le défaut du look.
+// Croisement : canal 6 = teinte FastLED du 2e train (0 = blanc, 64 jaune, 128 cyan, 160 bleu, 192 violet).
+const LOOK_PRESETS=[
+  [],
+  [{n:"Lent",c:[255,255,255],p:{4:160,5:30}},{n:"Rapide",c:[255,255,255],p:{4:250,5:120}},
+   {n:"Inversé",c:[255,255,255],p:{4:100,5:60}},{n:"Chaud",c:[255,120,30],p:{4:165,5:40}},{n:"Froid",c:[60,140,255],p:{4:165,5:40}}],
+  [{n:"Neige",c:[255,255,255],p:{5:180,4:60}},{n:"Étoiles",c:[255,200,120],p:{5:40,4:40}},
+   {n:"Feu d'artifice",c:[255,0,160],p:{5:220,4:230}},{n:"Plancton",c:[0,200,255],p:{5:130,4:90}}],
+  [{n:"Bougie",c:[255,110,10],p:{6:235,5:150,4:0}},{n:"Néon fatigué",c:[200,220,255],p:{6:150,5:10,4:0}},
+   {n:"Orage",c:[30,60,255],p:{6:60,5:40,4:120}},{n:"Feu",c:[255,40,0],p:{6:180,5:110,4:0}}],
+  [{n:"Balayage",c:[255,255,255],p:{4:40,5:110}},{n:"Scanner",c:[255,0,0],p:{4:200,5:20}},
+   {n:"Comète",c:[0,180,255],p:{4:130,5:45}},{n:"Vagues",c:[0,255,140],p:{4:80,5:90,7:180}}],
+  [{n:"Lente",c:[0,120,255],p:{4:20,5:0}},{n:"Pulsation",c:[255,0,160],p:{4:140,5:60}},
+   {n:"Battement",c:[255,0,0],p:{4:230,5:20}},{n:"Veille",c:[255,170,90],p:{4:40,5:120}}],
+  [{n:"Police",c:[255,0,0],p:{6:160,4:150,5:35}},{n:"Feu",c:[255,30,0],p:{6:64,4:90,5:50}},
+   {n:"Glace",c:[0,200,255],p:{6:0,4:70,5:60}},{n:"Néon",c:[255,0,160],p:{6:192,4:120,5:30}},{n:"Mer",c:[0,60,255],p:{6:128,4:60,5:70,7:150}}],
+  [{n:"Train court",c:[255,0,0],p:{4:150,5:15,6:50}},{n:"Pointillés",c:[255,255,255],p:{4:90,5:4,6:6}},
+   {n:"Marquee",c:[255,170,40],p:{4:70,5:20,6:20,7:200}},{n:"Long convoi",c:[0,120,255],p:{4:120,5:110,6:110}}],
+];
+function lookDefaults(L,look){for(let ch=4;ch<=8;ch++)look[ch]=0;for(const p of LOOK_PARAMS[L])look[p.ch]=p.def}
 const SWATCHES=[[255,0,0],[255,90,0],[255,200,0],[0,255,0],[0,255,200],[0,120,255],[0,0,255],[140,0,255],[255,0,160],[255,170,90],[255,255,255],[0,0,0]];
 const lookIndex=l=>Math.min(7,l[3]>>5);
 const lookValue=i=>i*32+16;
@@ -238,17 +293,32 @@ function sendLook(target,look){
 const previews=[];
 function hsv(hh,s,v){const f=n=>{const k=(n+hh*6)%6;return v*(1-s*Math.max(0,Math.min(k,4-k,1)))};return[f(5),f(3),f(1)]}
 function rnd(i,t){let x=Math.sin(i*127.1+t*311.7)*43758.5453;return x-Math.floor(x)}
+// Même calcul que renderLook (multifixure.cpp) sur une barre de 144 LED à ~70 images/s.
+const SIM_LEDS=144,SIM_FPS=70;
+const amap=(x,a,b)=>Math.floor(x*(b-a)/255)+a;
+const mod=(a,m)=>((a%m)+m)%m;
+function hue2rgb(v,bri){if(!v)return[bri,bri,bri];const[r,g,b]=hsv(v/256,1,bri);return[r,g,b]}
 function px(look,i,n,t){
-  const[r,g,b]=look;const L=lookIndex(look);const sp=0.15+look[4]/255*2.5;const w=0.05+look[5]/255*0.6;const p=i/n;
+  const[r,g,b]=look;const L=lookIndex(look);const sp=look[4],wd=look[5],ex=look[6];
+  const N=SIM_LEDS,f=t*SIM_FPS,k=Math.floor((i+0.5)*N/n),step=amap(sp,1,8);
+  const len=Math.max(1,amap(wd,1,N));
   switch(L){
     case 0:return[r,g,b];
-    case 1:return hsv((p+t*sp*0.3)%1,1,255);
-    case 2:{const k=Math.floor(t*sp*8);return rnd(i,k)<w*0.5?[255,255,255]:[r*.6,g*.6,b*.6]}
-    case 3:{const k=Math.floor(t*sp*12);const f=0.4+0.6*rnd(i>>2,k);return[r*f,g*f,b*f]}
-    case 4:{const ph=(t*sp*0.4)%2;const on=ph<1?p<ph:p>=ph-1;return on?[r,g,b]:[0,0,0]}
-    case 5:{const f=0.15+0.85*(0.5+0.5*Math.sin(t*sp*2));return[r*f,g*f,b*f]}
-    case 6:{const a=(t*sp*0.4)%1;const d=Math.min(Math.abs(p-a),Math.abs(p-(1-a)));return d<w/2?[r,g,b]:[r*.08,g*.08,b*.08]}
-    case 7:{const a=(t*sp*0.4)%1;let d=Math.abs(p-a);d=Math.min(d,1-d);return d<w/2?[r,g,b]:[0,0,0]}
+    case 1:{const h=mod(f*amap(sp,-6,6),256),d=amap(wd,1,40);const c=hsv(mod(h+k*d,256)/256,1,255);
+      return[c[0]*(r||255)/255,c[1]*(g||255)/255,c[2]*(b||255)/255]}
+    case 2:{const dens=amap(wd,1,N/2),thr=amap(sp,4,40)+ex/4;
+      const p=Math.min(0.9,Math.max(0.03,dens*thr/256*13/N*2));const per=0.2,ph=rnd(i,7)*per;
+      const bk=Math.floor((t+ph)/per),fr=((t+ph)/per)%1;const v=rnd(i,bk)<p?1-fr:0;return[r*v,g*v,b*v]}
+    case 3:{const bk=Math.floor(t*25);const on=rnd(1,bk)<(ex<8?40:ex)/256;
+      if(on)return rnd(2,bk)<amap(sp,10,180)/256?[255,255,255]:[r,g,b];
+      const d=amap(wd,0,80)/255;return[r*d,g*d,b*d]}
+    case 4:{const head=mod(Math.floor(f)*step,N);return mod(k-head,N)<len?[r,g,b]:[0,0,0]}
+    case 5:{const lo=amap(wd,0,180),wave=128+127*Math.sin(2*Math.PI*(f*step+ex)/256);
+      const v=(lo+wave*(255-lo)/255)/255;return[r*v,g*v,b*v]}
+    case 6:{const per=len+Math.max(1,len>>1),head=Math.floor(f*step/3);
+      if(mod(k-head,per)<len)return[r,g,b];
+      if(mod(N-1-k-head-(per>>1),per)<len)return hue2rgb(ex,Math.max(r,g,b));return[0,0,0]}
+    case 7:{const per=Math.max(1,len+amap(ex,0,N)),head=Math.floor(f)*step;return mod(k-head,per)<len?[r,g,b]:[0,0,0]}
   }return[r,g,b];
 }
 function drawPreviews(ts){
@@ -257,7 +327,7 @@ function drawPreviews(ts){
     if(!cv.isConnected)continue;
     const look=get();const W=cv.clientWidth,H=cv.clientHeight;if(!W)continue;
     if(cv.width!==W){cv.width=W;cv.height=H}
-    const c=cv.getContext("2d");const n=24;const cw=W/n;
+    const c=cv.getContext("2d");const n=Math.max(24,Math.min(72,W>>2));const cw=W/n;
     for(let i=0;i<n;i++){const[r,g,b]=px(look,i,n,t);c.fillStyle=`rgb(${r|0},${g|0},${b|0})`;c.fillRect(Math.floor(i*cw),0,Math.ceil(cw)+1,H)}
   }
   requestAnimationFrame(drawPreviews);
@@ -436,9 +506,10 @@ function closeSheet(){
 }
 $("#scrim").onclick=closeSheet;
 
-function fader(label,val,min,max,onInput,cls){
-  const out=h("output",{},String(val));
-  const r=h("input",{type:"range",min,max,value:val,class:cls||"",oninput:e=>{out.textContent=e.target.value;onInput(+e.target.value)}});
+function fader(label,val,min,max,onInput,cls,fmt){
+  const show=v=>fmt?fmt(v):String(v);
+  const out=h("output",{},show(val));
+  const r=h("input",{type:"range",min,max,value:val,class:cls||"",oninput:e=>{out.textContent=show(+e.target.value);onInput(+e.target.value)}});
   return h("div",{class:"fader"},h("label",{},label),r,out);
 }
 function stepper(val,min,max,fmt,onChange){
@@ -467,20 +538,43 @@ function openLook(target){
   const sws=SWATCHES.map(c=>h("button",{class:"sw",style:`background:rgb(${c})`+(c.every(x=>!x)?";border-color:var(--line)":""),
     onclick:e=>{base=[...c];if(c.every(x=>!x)){base=[0,0,0]}else if(!inten)inten=255;
       sws.forEach(s=>s.classList.remove("on"));e.currentTarget.classList.add("on");writeColor()}}));
-  const lookBtns=LOOKS.map((name,i)=>h("button",{class:i===lookIndex(look)?"on":"",onclick:e=>{look[3]=lookValue(i);
-    lookBtns.forEach(b=>b.classList.remove("on"));e.currentTarget.classList.add("on");syncFaders();apply()}},name));
-  const fSpeed=fader("Vitesse",look[4],0,255,v=>{look[4]=v;apply()});
-  const fWidth=fader("Largeur",look[5],0,255,v=>{look[5]=v;apply()});
-  const syncFaders=()=>{const[u1,u2]=LOOK_USES[lookIndex(look)];fSpeed.classList.toggle("off",!u1);fWidth.classList.toggle("off",!u2)};
-  syncFaders();
+  const paramBox=h("div",{class:"params"}),presetBox=h("div",{class:"presets"});
+  const fInten=fader("Intensité",inten,0,255,v=>{inten=v;writeColor()});
+  const renderLookParts=()=>{
+    const L=lookIndex(look);
+    paramBox.replaceChildren(...LOOK_PARAMS[L].map(p=>{
+      if(p.kind==="dir")return fader(p.name,look[p.ch],0,255,v=>{look[p.ch]=v;apply()},"",dirText);
+      if(p.kind==="hue2")return fader(p.name,look[p.ch],0,255,v=>{look[p.ch]=v;apply()},"hue2",v=>v?"":"blanc");
+      return fader(p.name,look[p.ch],0,255,v=>{look[p.ch]=v;apply()});
+    }));
+    presetBox.replaceChildren(...LOOK_PRESETS[L].map(ps=>{
+      const pl=presetLook(L,ps,255);
+      return h("button",{class:"preset",onclick:()=>{
+        base=[...ps.c];if(!inten)inten=255;const nl=presetLook(L,ps,inten);for(let i=0;i<10;i++)if(i!==9)look[i]=nl[i];
+        sws.forEach(s=>s.classList.remove("on"));fInten.querySelector("input").value=inten;fInten.querySelector("output").textContent=inten;
+        renderLookParts();apply()}},preview(()=>pl),h("span",{},ps.n));
+    }));
+    presetBox.hidden=!LOOK_PRESETS[L].length;
+  };
+  const lookBtns=LOOKS.map((name,i)=>h("button",{class:i===lookIndex(look)?"on":"",onclick:e=>{
+    if(lookIndex(look)!==i){look[3]=lookValue(i);lookDefaults(i,look)}
+    lookBtns.forEach(b=>b.classList.remove("on"));e.currentTarget.classList.add("on");renderLookParts();apply()}},name));
+  renderLookParts();
   openSheet(title,
-    preview(()=>look,"sheet-prev"),
-    h("div",{class:"swatches"},sws),
-    fader("Teinte",0,0,359,v=>{const[r,g,b]=hsv(v/360,1,255);base=[r|0,g|0,b|0];if(!inten)inten=255;sws.forEach(s=>s.classList.remove("on"));writeColor()},"hue"),
-    fader("Intensité",inten,0,255,v=>{inten=v;writeColor()}),
-    h("div",{class:"looks"},lookBtns),
-    fSpeed,fWidth);
-  $(".sheet-prev").style.cssText="height:26px;border-radius:8px;width:100%";
+    h("div",{class:"sheet-scroll"},
+      preview(()=>look,"sheet-prev"),
+      h("div",{class:"looks"},lookBtns),
+      presetBox,
+      h("div",{class:"swatches"},sws),
+      fader("Teinte",0,0,359,v=>{const[r,g,b]=hsv(v/360,1,255);base=[r|0,g|0,b|0];if(!inten)inten=255;sws.forEach(s=>s.classList.remove("on"));writeColor()},"hue"),
+      fInten,
+      paramBox));
+}
+function dirText(v){const s=amap(v,-6,6);return s===0?"arrêt":(s>0?"→ ":"← ")+Math.abs(s)}
+function presetLook(L,ps,inten){
+  const l=[0,0,0,lookValue(L),0,0,0,0,0,0];lookDefaults(L,l);
+  for(const[ch,v]of Object.entries(ps.p))l[+ch]=v;
+  for(let i=0;i<3;i++)l[i]=Math.round(ps.c[i]*inten/255);return l;
 }
 
 /* Une barre */
@@ -529,55 +623,96 @@ async function pollWifiScan(setList){
   }
   toast("Scan trop long");
 }
+function signalText(rssi){if(rssi==null)return"";return rssi>=-60?"▂▄▆█ fort":rssi>=-70?"▂▄▆ bon":rssi>=-80?"▂▄ faible":"▂ très faible"}
 function openWifi(){
-  const ssid=h("input",{type:"text",placeholder:"Nom du Wi-Fi de la maison",value:S.wifi.ssid||"",autocapitalize:"off",autocomplete:"off"});
-  const pass=h("input",{type:"password",placeholder:"Mot de passe"});
+  const OTHER="\u0000autre";
+  let known=[],scanned=[],chosen=S.wifi.ssid||"";
+  const sel=h("select",{class:"wsel"});
+  const custom=h("input",{type:"text",placeholder:"Nom exact du réseau",autocapitalize:"off",autocomplete:"off",spellcheck:"false"});
+  const pass=h("input",{type:"password",placeholder:"Mot de passe",autocapitalize:"off",autocomplete:"off",spellcheck:"false"});
+  const showPass=h("button",{class:"eye",type:"button",onclick:()=>{const t=pass.type==="password";pass.type=t?"text":"password";showPass.textContent=t?"Masquer":"Afficher"}},"Afficher");
+  const passRow=h("div",{class:"passrow"},pass,showPass);
+  const info=h("div",{class:"wpick"});
+  const scanBtn=h("button",{class:"scanbtn",type:"button"},"↻");
   const knownBox=h("div",{style:"display:flex;flex-direction:column;gap:6px"});
-  const scanBox=h("div",{style:"display:flex;flex-direction:column;gap:6px"});
-  const pick=(s,p="")=>{ssid.value=s;if(p)pass.value=p;pass.focus()};
-  const paintKnown=list=>{
-    knownBox.replaceChildren();
-    if(!list.length){knownBox.append(h("div",{class:"note"},"Aucun réseau mémorisé pour l’instant."));return}
-    for(const k of list){
-      const forget=h("button",{style:"width:44px;height:44px;flex:none;color:var(--bad);border-color:#5a2a2e",
-        onclick:async()=>{if(!confirm(`Oublier « ${k.ssid} » ?`))return;
-          try{await api("POST","/api/settings",{forgetWifi:k.ssid});paintKnown((await api("GET","/api/wifi/known"))||[])}catch{toast("Passerelle injoignable")}}},"×");
-      const use=h("button",{class:"row",style:"flex:1",onclick:()=>pick(k.ssid,k.pass||"")},
-        h("div",{class:"main"},h("div",{class:"t"},k.ssid),h("div",{class:"s"},"Mémorisé · toucher pour remplir")));
-      knownBox.append(h("div",{style:"display:flex;gap:6px;align-items:center"},use,forget));
-    }
+  // Sur téléphone, le clavier recouvre le bas : on garde le champ actif visible.
+  for(const el of[custom,pass])el.addEventListener("focus",()=>setTimeout(()=>el.scrollIntoView({block:"center",behavior:"smooth"}),300));
+
+  const current=()=>sel.value===OTHER?custom.value.trim():sel.value;
+  const paintInfo=()=>{
+    const s=current();const k=known.find(x=>x.ssid===s);const n=scanned.find(x=>x.ssid===s);
+    custom.hidden=sel.value!==OTHER;
+    const open=n?.open;passRow.hidden=!!open;
+    info.replaceChildren(
+      h("div",{class:"t"},s||"Aucun réseau choisi"),
+      h("div",{class:"s"},s?[n?signalText(n.rssi)+" · canal "+n.channel:"pas vu au dernier scan",open?"ouvert, sans mot de passe":(k?"mot de passe mémorisé":"protégé")].join(" · "):"Choisissez dans la liste ci-dessus"));
   };
-  const paintScan=nets=>{
-    scanBox.replaceChildren();
-    if(!nets.length){scanBox.append(h("div",{class:"note"},"Aucun réseau trouvé."));return}
-    for(const n of nets){
-      scanBox.append(h("button",{class:"row",onclick:()=>pick(n.ssid)},
-        h("div",{class:"main"},h("div",{class:"t"},n.ssid),
-          h("div",{class:"s"},`Canal ${n.channel} · ${n.rssi} dBm${n.open?" · ouvert":""}`)),
-        h("span",{class:"chev"},"›")));
+  const paintSelect=()=>{
+    const keep=sel.value&&sel.value!==OTHER?sel.value:chosen;
+    const opts=[h("option",{value:"",disabled:true},"— Choisir un réseau —")];
+    if(known.length)opts.push(h("optgroup",{label:"Mémorisés"},known.map(k=>h("option",{value:k.ssid},k.ssid))));
+    const others=scanned.filter(n=>!known.some(k=>k.ssid===n.ssid));
+    if(scanned.length)opts.push(h("optgroup",{label:"Trouvés autour"},others.map(n=>h("option",{value:n.ssid},`${n.ssid}  ${signalText(n.rssi).split(" ")[0]}${n.open?"  (ouvert)":""}`))));
+    opts.push(h("option",{value:OTHER},"Autre réseau (saisir le nom)…"));
+    sel.replaceChildren(...opts);
+    const all=[...known.map(k=>k.ssid),...scanned.map(n=>n.ssid)];
+    sel.value=all.includes(keep)?keep:(keep?OTHER:"");
+    if(sel.value===OTHER&&keep)custom.value=keep;
+    onPick(false);
+  };
+  const onPick=(user=true)=>{
+    const k=known.find(x=>x.ssid===sel.value);
+    if(user){pass.value=k?.pass||"";pass.type="password";showPass.textContent="Afficher"}
+    else if(k&&!pass.value)pass.value=k.pass||"";
+    paintInfo();
+  };
+  sel.addEventListener("change",()=>{onPick(true);if(sel.value===OTHER)custom.focus()});
+  custom.addEventListener("input",paintInfo);
+  const doScan=async()=>{
+    scanBtn.disabled=true;scanBtn.classList.add("spin");
+    if(DEMO){await new Promise(x=>setTimeout(x,800));scanned=[{ssid:"Maison",rssi:-52,channel:6},{ssid:"Voisin 5G",rssi:-78,channel:11},{ssid:"Café libre",rssi:-71,channel:1,open:true}]}
+    else await pollWifiScan(n=>scanned=n.filter(x=>x.ssid));
+    scanBtn.disabled=false;scanBtn.classList.remove("spin");paintSelect();
+  };
+  scanBtn.onclick=doScan;
+
+  const paintKnown=list=>{
+    known=list;knownBox.replaceChildren();
+    if(!list.length)knownBox.append(h("div",{class:"note"},"Aucun réseau mémorisé pour l’instant."));
+    for(const k of list){
+      knownBox.append(h("div",{class:"row",style:"padding:6px 6px 6px 12px"},
+        h("div",{class:"main"},h("div",{class:"t"},k.ssid)),
+        h("button",{style:"height:40px;padding:0 12px;color:var(--bad);border-color:#5a2a2e",
+          onclick:async()=>{if(!confirm(`Oublier « ${k.ssid} » ?`))return;
+            try{await api("POST","/api/settings",{forgetWifi:k.ssid});paintKnown((await api("GET","/api/wifi/known"))||[])}catch{toast("Passerelle injoignable")}}},"Oublier")));
     }
+    paintSelect();
+  };
+  const save=async()=>{
+    const s=current();if(!s){toast("Choisissez un réseau");return}
+    S.wifi.ssid=s;try{await api("POST","/api/settings",{wifiSsid:s,wifiPass:passRow.hidden?"":pass.value})}catch{}
+    toast("Enregistré · la passerelle se reconnecte");closeSheet();
   };
   const rc=S.wifi.routerChannel;
-  openSheet("Wi-Fi",
+  openSheet("Wi-Fi",h("div",{class:"sheet-scroll"},
     h("div",{class:"note"},S.wifi.ap?(S.wifi.ssid?`Pas connectée à ${S.wifi.ssid}.`:"Pas de Wi-Fi de la maison."):`Connectée à ${S.wifi.ssid} · ${S.wifi.ip}`),
     S.wifi.ap&&rc&&rc!==S.wifi.channel?h("div",{class:"note"},`Le routeur est sur le canal ${rc}, les barres sur le canal ${S.wifi.channel}. Une barre n’a qu’une radio : la passerelle ne rejoint la maison que si les barres sont sur le canal du routeur.`):null,
     S.wifi.ap&&rc&&rc!==S.wifi.channel?h("button",{class:"big",onclick:()=>{
       if(!confirm(`Passer toutes les barres sur le canal ${rc} ? Réglez ensuite PoulpyNode / Pollux sur le même canal.`))return;
       api("POST","/api/settings",{channel:rc}).catch(()=>{});toast("Les barres passent sur le canal "+rc);closeSheet()}},`Passer les barres sur le canal ${rc}`):null,
     S.wifi.ssid?kv("Barres qui le connaissent",h("span",{},`${S.wifi.shared??"?"} / ${S.tubes.length}`)):null,
-    h("div",{class:"note",style:"margin-top:4px"},"Réseaux mémorisés"),
-    knownBox,
-    h("button",{class:"big",onclick:async()=>{
-      scanBox.replaceChildren(h("div",{class:"note"},"Recherche des réseaux…"));
-      toast("Scan Wi-Fi…");await pollWifiScan(paintScan);
-    }},"Scanner les réseaux"),
-    scanBox,
-    ssid,pass,
-    h("button",{class:"big accent",onclick:async()=>{S.wifi.ssid=ssid.value;try{await api("POST","/api/settings",{wifiSsid:ssid.value,wifiPass:pass.value})}catch{}
-      toast("Enregistré · la passerelle se reconnecte");closeSheet()}},"Enregistrer"),
-    h("div",{class:"note"},"Toutes les barres gardent le Wi-Fi actif : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Les réseaux enregistrés restent dans la liste pour un rappel rapide. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert)."));
-  if(!DEMO)api("GET","/api/wifi/known").then(paintKnown).catch(()=>paintKnown([]));
+    h("div",{class:"note"},"Réseau"),
+    h("div",{class:"wline"},sel,scanBtn),
+    custom,
+    info,
+    passRow,
+    h("button",{class:"big accent",onclick:save},"Enregistrer et connecter"),
+    h("details",{class:"wknown"},h("summary",{},"Gérer les réseaux mémorisés"),knownBox),
+    h("div",{class:"note"},"Toutes les barres gardent le Wi-Fi actif : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert).")));
+  paintSelect();
+  if(!DEMO)api("GET","/api/wifi/known").then(l=>paintKnown(l||[])).catch(()=>paintKnown([]));
   else paintKnown([{ssid:"Maison",pass:"demo"},{ssid:"Salle",pass:""}]);
+  doScan();
 }
 function openGateway(){
   openSheet("Passerelle",
