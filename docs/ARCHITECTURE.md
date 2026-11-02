@@ -1,4 +1,4 @@
-# PoulpyTube — architecture cible
+# PoulpyLED (ex-PoulpyTube) — architecture cible
 
 > Statut : **validé le 2026-10-29** (adresse 0, canal 10 déclencheur, pas de mot de passe). midiPoulpy reporté : pas assez de retour d'usage pour figer ses effets. Rien n'est codé. Une fois validé, ce document devient la référence du firmware et des émetteurs (PoulpyNode, PoulpyLink, midiPoulpy, Pollux).
 
@@ -8,7 +8,7 @@ Une barre affiche toujours **un look**. Ce look vient soit du **live** (un flux 
 
 ## 2. Le look
 
-Un look = les 10 octets du slot PoulpyTube actuel (type Pollux `…00B1`), inchangés pour rester compatible :
+Un look = les 10 octets du slot PoulpyLED actuel (type Pollux `…00B1`), inchangés pour rester compatible :
 
 | Canal | Rôle |
 |---|---|
@@ -46,8 +46,17 @@ Changements par rapport à aujourd'hui :
 ### Live
 
 - C'est le flux « multifixture » actuel : univers DMX en 4 blocs de 128, marqueur `data[5]=0x01` + `data[6]=0xA5`. La barre lit son slot à son adresse.
-- Émetteurs : PoulpyNode et PoulpyLink (pilotés par Pollux), midiPoulpy (§ 9).
+- Émetteurs : PoulpyNode et PoulpyLink (pilotés par Pollux), midiPoulpy (§ 9), et la passerelle elle-même quand son **nœud Art-Net** est actif (ci-dessous).
 - Dès qu'un paquet live arrive, la barre le suit (pas de délai).
+
+### Nœud Art-Net de la passerelle
+
+- Réglages → **Nœud Art-Net** : Coupé / Actif + univers (numéroté comme dans Pollux, à partir de 0). Coupé par défaut. Enregistré dans les réglages (v3) et **partagé par la balise** : la barre qui prend le relais de passerelle reprend le nœud.
+- Actif : la passerelle écoute UDP 6454 sur son Wi-Fi (maison ou point d'accès `PoulpyLED`, alors `192.168.4.1`). Elle répond à ArtPoll (nom court `PoulpyLED`) : Pollux la voit dans ses nœuds Art-Net.
+- Un ArtDmx de son univers est appliqué tout de suite à son propre slot, puis relayé en flux multifixture (même paquet que PoulpyNode). Seuls les blocs de 128 où une barre connue lit son slot partent. Un bloc part quand il change (50 images/s au plus), sinon toutes les 250 ms. Plus d'Art-Net depuis 0,5 s : plus rien ne part, les barres comptent leur délai de retour.
+- **Un seul émetteur** : si la passerelle entend un flux live radio (PoulpyNode, PoulpyLink, midiPoulpy) depuis moins de 1,5 s, elle n'applique ni ne relaie son Art-Net. L'application l'affiche (« suspendu »).
+- Viser la passerelle en **unicast** : le broadcast Art-Net passe au débit de base du Wi-Fi et sature vite. Comme pour le Wi-Fi de la maison, la passerelle ne le rejoint que si le routeur est sur le canal des barres.
+- L'IP change avec la passerelle : après une passation, relancer la recherche de nœuds dans Pollux.
 
 ### Autonome
 
@@ -77,10 +86,10 @@ N'importe quelle barre peut être passerelle. Elle continue d'afficher son propr
 
 ### Wi-Fi
 
-- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application, ou repris de la dernière mise à jour OTA envoyée par Pollux si la barre n'en a pas). Un seul Wi-Fi **actif** à la fois ; jusqu'à 8 réseaux **mémorisés** (LittleFS `/wifi.json`) pour un rappel rapide dans l'UI. **Réinitialiser (tests)** : `POST /api/settings` `{ "resetWifi": true }` efface le Wi-Fi actif et la liste mémorisée sur la passerelle et diffuse un `WIFI_CONFIG` vide à toutes les barres ; la passerelle rouvre `PoulpyTube`.
+- **Par défaut : le Wi-Fi de la maison** (SSID et mot de passe enregistrés depuis l'application, ou repris de la dernière mise à jour OTA envoyée par Pollux si la barre n'en a pas). Un seul Wi-Fi **actif** à la fois ; jusqu'à 8 réseaux **mémorisés** (LittleFS `/wifi.json`) pour un rappel rapide dans l'UI. **Réinitialiser (tests)** : `POST /api/settings` `{ "resetWifi": true }` efface le Wi-Fi actif et la liste mémorisée sur la passerelle et diffuse un `WIFI_CONFIG` vide à toutes les barres ; la passerelle rouvre `PoulpyLED`.
 - **Partagé** : la passerelle donne le Wi-Fi actif à toutes les barres (`WIFI_CONFIG`, seulement à celles dont l'empreinte dans `TUBE_STATUS` diffère). Chacune le garde en EEPROM : la barre qui devient passerelle rejoint la maison toute seule.
-- **Secours** : si la maison n'est pas joignable (pas de réglage, introuvable, autre canal, ou 20 s sans succès), la passerelle ouvre le Wi-Fi `PoulpyTube`, ouvert. Même nom pour toutes les barres : le téléphone ne voit qu'un réseau. Elle retente la maison toutes les 2 minutes ; connectée, elle coupe ce point d'accès.
-- **Adresse** : `poulpytube.local`.
+- **Secours** : si la maison n'est pas joignable (pas de réglage, introuvable, autre canal, ou 20 s sans succès), la passerelle ouvre le Wi-Fi `PoulpyLED`, ouvert. Même nom pour toutes les barres : le téléphone ne voit qu'un réseau. Elle retente la maison toutes les 2 minutes ; connectée, elle coupe ce point d'accès.
+- **Adresse** : `poulpyled.local` (avant le 2026-11-02 : `poulpytube.local`). L'ESP8266 n'annonce qu'un nom en mDNS ; sur le point d'accès, le DNS local répond à tous les noms.
   - Sur son propre Wi-Fi : la passerelle répond elle-même aux noms (DNS local), à `192.168.4.1`. Toute adresse mène à la page, qui s'ouvre souvent toute seule à la connexion.
   - Sur la maison : mDNS. L'IP change avec la passerelle : la page ouverte se reconnecte et se recharge toute seule.
 - **Canal radio** : une barre n'a qu'une radio. La passerelle ne rejoint la maison **que si le routeur est sur le canal des barres** ; elle ne change jamais de canal d'elle-même (les barres quitteraient PoulpyNode / PoulpyLink). L'application montre le canal du routeur et propose de passer toutes les barres dessus ; PoulpyNode doit suivre.
@@ -100,7 +109,7 @@ Paquet inchangé (`struct_dmx_packet`, 229 octets, signature `3C 61 05`, command
 | Code | Nom | Charge utile (`data[10…]`) |
 |---|---|---|
 | `0xC0` | `LOOK` | masque de groupes (2 octets, `0xFFFF` = toutes) ou MAC cible en `data[4..9]` ; look (10 octets) ; fondu en ms (2 octets) ; numéro de version de l'état (2 octets) ; drapeau « mémoriser » |
-| `0xC1` | `GATEWAY_BEACON` | horloge de la passerelle en ms (4 octets) ; version de l'état (2 octets) ; canal ; drapeaux (désignée / secours) |
+| `0xC1` | `GATEWAY_BEACON` | horloge de la passerelle en ms (4 octets) ; version de l'état (2 octets) ; canal ; drapeaux (désignée / secours) ; `data[18]` délai de retour ; `data[19]` nœud Art-Net (0/1) ; `data[20..21]` univers |
 | `0xC2` | `SET_ROLE` | MAC cible ; rôle (0 = barre, 1 = passerelle) ; délai de retour du live en s |
 | `0xC3` | `TUBE_STATUS` | barre → passerelle : groupe, adresse, LEDs, limite W, mWh, source, drapeaux, look autonome, firmware ; `data[50]` empreinte du Wi-Fi ; `data[51]` longueur du nom, `data[52…]` nom (≤ 24) |
 | `0xC4` | `WIFI_CONFIG` | MAC cible ; `dmxvalues[0..32]` SSID, `[33..97]` mot de passe |
@@ -117,7 +126,7 @@ Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 
 ### Principes
 
-- Servie par la passerelle à `poulpytube.local`. Pas d'installation.
+- Servie par la passerelle à `poulpyled.local`. Pas d'installation.
 - Téléphone en portrait, épurée, gros boutons et faders tactiles.
 - **Pas de défilement** : onglets en bas, panneaux qui s'ouvrent par-dessus. Seules les listes longues (beaucoup de barres) défilent.
 - Compilée dans le firmware (compressée) : un seul `.bin`, l'OTA par catalogue ne change pas.
@@ -152,7 +161,7 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 
 | Méthode | Chemin | Rôle |
 |---|---|---|
-| GET | `/api/state` | groupes, looks, passerelle, Wi-Fi, version |
+| GET | `/api/state` | groupes, looks, passerelle, Wi-Fi, version, `artnet` `{ on, universe, listening, receiving, suspended, fps, from }` |
 | POST | `/api/look` | `{ "groups": [1,2] \| "mac": "…", "look": [10 octets], "fadeMs": 500 }` |
 | GET | `/api/tubes` | barres entendues |
 | POST | `/api/scan` | relance un scan |
@@ -161,7 +170,7 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 | GET | `/api/wifi/known` | réseaux mémorisés `[{ssid,pass}]` (≤ 8) |
 | GET | `/api/firmware/catalog` | catalogue HTTP (passerelle sur le Wi-Fi maison) : `{ ok, releases:[{version,date,note,url}] }` |
 | POST | `/api/ota` | `{ "url", "mac"? }` — OTA `0xFA` (SSID/pass = Wi-Fi maison) ; sans `mac` = toutes + passerelle |
-| POST | `/api/settings` | Wi-Fi actif, `forgetWifi`, `resetWifi` (tests : oublier Wi-Fi sur toutes les barres), délai de retour, canal |
+| POST | `/api/settings` | Wi-Fi actif, `forgetWifi`, `resetWifi` (tests : oublier Wi-Fi sur toutes les barres), délai de retour, canal, `artnet` (bool), `artnetUniverse` (0..32767) |
 | GET | `/api/scenes` | les scènes enregistrées |
 | POST | `/api/scenes` | `{ "slot", "name", "fadeMs" }` : enregistre l'état actuel |
 | POST | `/api/scenes/meta` | renomme ou change le fondu |
@@ -179,7 +188,8 @@ Même API envisageable plus tard sur PoulpyNode.
 | PoulpyNode (Pollux) | live | flux multifixture, commandes de setup |
 | PoulpyLink (Pollux) | live | idem par USB |
 | midiPoulpy | live | flux multifixture depuis le MIDI (§ 9) |
-| Passerelle PoulpyTube | autonome | `LOOK`, balise, commandes de setup |
+| Passerelle PoulpyLED | autonome | `LOOK`, balise, commandes de setup |
+| Passerelle PoulpyLED, nœud Art-Net | live | flux multifixture depuis l'Art-Net reçu sur son Wi-Fi |
 
 PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmware compatible PoulpyNode.
 
@@ -236,6 +246,7 @@ PoulpyLights ne pilote plus les barres. Ses anciennes cartes recevront un firmwa
 | `power` | limite en watts, compteur d'énergie |
 | `ota` | mise à jour par catalogue |
 | `gateway` | rôle, élection, Wi-Fi, table des looks, rediffusion |
+| `artnet` | nœud Art-Net de la passerelle : ArtPoll, ArtDmx, relais multifixture |
 | `web` | serveur HTTP, page compressée, API |
 
 ## 11. Réactivité attendue

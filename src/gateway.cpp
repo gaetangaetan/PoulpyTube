@@ -20,6 +20,7 @@ using WebServerT = ESP8266WebServer;
 using WebServerT = WebServer;
 #endif
 
+#include "artnet.h"
 #include "autolook.h"
 #include "build_version.h"
 #include "multifixure.h"
@@ -140,7 +141,7 @@ uint8_t sendCursor = 0;
 WebServerT server(80);
 DNSServer dns;
 // Un seul nom pour toutes les barres : le téléphone ne voit qu'un réseau, celui de la passerelle.
-const char* const AP_SSID = "PoulpyTube";
+const char* const AP_SSID = "PoulpyLED";
 bool apActive = false;
 void apOn();
 void apOff();
@@ -418,6 +419,8 @@ void sendBeacon(uint32_t now) {
   p.data[16] = detectedChannel;
   p.data[17] = (role == ROLE_DESIGNATED ? BEACON_DESIGNATED : 0) | (statusRequest ? BEACON_STATUS_REQ : 0);
   p.data[18] = settings.returnDelayS;
+  p.data[19] = settings.artnet;
+  put16(&p.data[20], settings.artnetUniverse);
   tubeBroadcast(p);
   statusRequest = false;
   lastBeaconSentMs = now;
@@ -858,6 +861,15 @@ void handleState() {
   w["channel"] = detectedChannel;
   w["routerChannel"] = routerChannel;
   doc["returnDelay"] = settings.returnDelayS;
+  const ArtnetStatus as = artnetStatus(millis());
+  JsonObject an = doc["artnet"].to<JsonObject>();
+  an["on"] = settings.artnet == 1;
+  an["universe"] = settings.artnetUniverse;
+  an["listening"] = as.listening;
+  an["receiving"] = as.receiving;
+  an["suspended"] = as.suspended;
+  an["fps"] = as.fps;
+  if (as.receiving) an["from"] = as.from.toString();
   doc["activeScene"] = activeScene;
   JsonArray groups = doc["groups"].to<JsonArray>();
   for (uint8_t g = 0; g < GROUP_COUNT; g++) {
@@ -1140,6 +1152,16 @@ void handleSettings() {
       lastBeaconSentMs = 0;
     }
   }
+  if (doc["artnet"].is<bool>() || doc["artnetUniverse"].is<int>()) {
+    if (doc["artnet"].is<bool>()) settings.artnet = doc["artnet"].as<bool>() ? 1 : 0;
+    if (doc["artnetUniverse"].is<int>()) {
+      int u = doc["artnetUniverse"].as<int>();
+      if (u < 0 || u > 32767) return sendError("artnetUniverse");
+      settings.artnetUniverse = u;
+    }
+    configSaveSettings(settings);
+    lastBeaconSentMs = 0;  // les barres l'apprennent tout de suite
+  }
   if (doc["channel"].is<int>()) {
     int ch = doc["channel"].as<int>();
     if (ch < 1 || ch > 13) return sendError("channel");
@@ -1237,13 +1259,26 @@ void handleSceneDelete() {
 
 // ---------- Démarrage / Wi-Fi ----------
 
+// Blocs de 128 où au moins une barre lit son slot (adresse 0 = suit le groupe).
+uint8_t liveBlocks() {
+  if (rowCount == 0) return 0x0F;
+  uint8_t mask = 0;
+  for (uint8_t i = 0; i < rowCount; i++) {
+    const int addr = rows[i].address ? rows[i].address : 1 + MULTIFIXTURE_SLOT * rows[i].group;
+    const int first = addr - 1;
+    const int last = min(first + MULTIFIXTURE_SLOT - 1, 511);
+    mask |= (1 << (first / 128)) | (1 << (last / 128));
+  }
+  return mask & 0x0F;
+}
+
 void startMdns() {
 #if defined(ESP8266)
   MDNS.close();
 #else
   MDNS.end();
 #endif
-  if (MDNS.begin("poulpytube")) MDNS.addService("http", "tcp", 80);
+  if (MDNS.begin("poulpyled")) MDNS.addService("http", "tcp", 80);
 }
 
 void startGateway(Role r) {
@@ -1458,6 +1493,14 @@ void gatewayOnBeacon(const uint8_t* d) {
     settings.returnDelayS = delayS;
     tubeSaveSettingsSoon();
   }
+  // Le nœud Art-Net suit la passerelle : celle qui prend le relais le connaît déjà.
+  const uint8_t artnet = d[19] ? 1 : 0;
+  const uint16_t uni = get16(&d[20]) & 0x7FFF;
+  if (artnet != settings.artnet || uni != settings.artnetUniverse) {
+    settings.artnet = artnet;
+    settings.artnetUniverse = uni;
+    tubeSaveSettingsSoon();
+  }
   if (d[17] & BEACON_STATUS_REQ) nextStatusMs = now + (myMac[5] % 20) * 15;
 }
 
@@ -1577,6 +1620,12 @@ void gatewayLoop(unsigned long now) {
   MDNS.update();
 #endif
   wifiLoop(now);
+  ArtnetConfig ac;
+  ac.enabled = settings.artnet == 1;
+  ac.universe = settings.artnetUniverse;
+  ac.blocks = liveBlocks();
+  ac.ip = wifiStep == W_UP ? WiFi.localIP() : WiFi.softAPIP();
+  artnetLoop(now, ac);
 
   // Pendant le live, les looks autonomes ne se voient pas : laisser l'air au flux.
   const bool live = tubeIsLive();

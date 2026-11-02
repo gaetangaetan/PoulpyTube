@@ -20,6 +20,10 @@ void tubeProcessPacket(const struct_dmx_packet& p);
 void tubeBroadcast(const struct_dmx_packet& p);
 // Envoi vers une MAC (ajoute le pair si besoin). nullptr ou FF… = diffusion.
 void tubeSendTo(const uint8_t* mac, const struct_dmx_packet& p);
+// Univers reçu en Art-Net par la passerelle : appliqué comme un flux multifixture.
+void tubeFeedLive(const uint8_t* dmx512);
+// Dernier bloc live reçu par radio (millis | 1), 0 = jamais. La passerelle ne s'entend pas elle-même.
+unsigned long tubeRadioLiveMs();
 // Vrai tant que le flux live n'a pas dépassé le délai de retour.
 bool tubeIsLive();
 // Enregistre settings en EEPROM quelques secondes après le dernier changement.

@@ -30,6 +30,8 @@ struct TubeSettings {
   char wifiSsid[33];     // Wi-Fi de la maison (passerelle)
   char wifiPass[65];
   char name[TUBE_NAME_MAX + 1];  // nom affiché (v2)
+  uint8_t artnet;                // 1 = la passerelle relaie l'Art-Net aux barres (v3, partagé par la balise)
+  uint16_t artnetUniverse;       // univers Art-Net 0..32767, numéroté comme dans Pollux
 };
 
 void configBegin();

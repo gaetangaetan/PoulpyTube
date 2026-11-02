@@ -3,7 +3,7 @@
 #ifndef BUILD_VERSION_H
 #define BUILD_VERSION_H
 
-#define VERSION "261101-2344"
-#define VERSION_INT 110
+#define VERSION "261102-1523"
+#define VERSION_INT 111
 
 #endif // BUILD_VERSION_H

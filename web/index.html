@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#14141A">
-<title>PoulpyTube</title>
+<title>PoulpyLED</title>
 <style>
 :root{
   --bg:#14141A; --panel:#1C1C24; --panel2:#24242E; --line:#3A3A46;
@@ -159,7 +159,7 @@ input[type=text],input[type=password]{width:100%;height:46px;border-radius:12px;
 <body>
 <div id="app">
   <header>
-    <h1>PoulpyTube</h1>
+    <h1>PoulpyLED</h1>
     <span id="pDemo" class="pill demo" hidden>Démo</span>
     <span id="lost" class="pill live" hidden>Passerelle… reconnexion</span>
     <span id="pMode" class="pill auto">Autonome</span>
@@ -236,7 +236,7 @@ const lookValue=i=>i*32+16;
 /* ---------- Données : API de la passerelle, sinon démo ---------- */
 let DEMO=false;
 const S={mode:"auto",gateway:{mac:"48:3F:DA:57:42:7F",designated:true},
-  wifi:{ssid:"",ip:"",ap:true,channel:6},returnDelay:4,groups:[],tubes:[],
+  wifi:{ssid:"",ip:"",ap:true,channel:6},returnDelay:4,artnet:{on:false,universe:0},groups:[],tubes:[],
   scenes:Array(20).fill(null),activeScene:-1};
 const NSCENES=20;
 const SERVER="https://poulpylights.gaetanstreel.com/poulpytube/api/backup.php";
@@ -437,7 +437,7 @@ async function openBackup(){
     h("label",{class:"check"},withTubes,"Récupérer aussi les réglages des barres (groupe, adresse, LEDs, limite)"),
     h("div",{class:"grid2"},
       h("button",{class:"big",onclick:async()=>{const b=await gatewayBackup();const a=h("a",{href:URL.createObjectURL(new Blob([JSON.stringify(b,null,1)],{type:"application/json"})),
-        download:"poulpytube-"+new Date().toISOString().slice(0,10)+".json"});document.body.append(a);a.click();a.remove()}},"Exporter un fichier"),
+        download:"poulpyled-"+new Date().toISOString().slice(0,10)+".json"});document.body.append(a);a.click();a.remove()}},"Exporter un fichier"),
       h("button",{class:"big",onclick:()=>{const f=h("input",{type:"file",accept:".json,application/json",onchange:async()=>{
         try{const b=JSON.parse(await f.files[0].text());if(b.format!=="poulpytube.backup")throw 0;
           if(!confirm("Remplacer les scènes par celles du fichier ?"))return;await applyBackup(b,withTubes.checked);toast("Fichier importé");closeSheet()}
@@ -483,11 +483,12 @@ function renderSettings(){
     settingRow("Wi-Fi",S.wifi.ap?(S.wifi.ssid?`${S.wifi.ssid} : pas connecté`+(S.wifi.routerChannel&&S.wifi.routerChannel!==S.wifi.channel?` (canal ${S.wifi.routerChannel})`:""):"Wi-Fi de la maison : aucun"):`${S.wifi.ssid} · ${S.wifi.ip}`,openWifi),
     settingRow("Passerelle",`${tubeName({mac:S.gateway.mac})} · ${S.gateway.designated?"désignée":"secours"}`,openGateway),
     settingRow("Retour au look autonome",`${S.returnDelay} s après la fin du live`,openReturn),
+    settingRow("Nœud Art-Net",artnetSummary(),openArtnet),
     settingRow("Canal radio",`Canal ${S.wifi.channel}`,openChannel),
     settingRow("Sauvegarde","Scènes et barres sur gaetanstreel.com",openBackup),
     settingRow("Mises à jour","Firmware des barres",openUpdate),
     settingRow("Réinitialiser (tests)","Oublier tous les Wi-Fi sur toutes les barres",openResetWifi),
-    h("div",{class:"note",style:"margin-top:6px"},"Adresse : poulpytube.local"+(S.wifi.ip&&!S.wifi.ap?" · "+S.wifi.ip:"")));
+    h("div",{class:"note",style:"margin-top:6px"},"Adresse : poulpyled.local"+(S.wifi.ip&&!S.wifi.ap?" · "+S.wifi.ip:"")));
 }
 
 /* ---------- Panneau ---------- */
@@ -708,7 +709,7 @@ function openWifi(){
     passRow,
     h("button",{class:"big accent",onclick:save},"Enregistrer et connecter"),
     h("details",{class:"wknown"},h("summary",{},"Gérer les réseaux mémorisés"),knownBox),
-    h("div",{class:"note"},"Toutes les barres gardent le Wi-Fi actif : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpytube.local. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyTube (ouvert).")));
+    h("div",{class:"note"},"Toutes les barres gardent le Wi-Fi actif : celle qui devient passerelle rejoint la maison toute seule, à l’adresse poulpyled.local. Si la maison n’est pas joignable, la passerelle ouvre le Wi-Fi PoulpyLED (ouvert).")));
   paintSelect();
   if(!DEMO)api("GET","/api/wifi/known").then(l=>paintKnown(l||[])).catch(()=>paintKnown([]));
   else paintKnown([{ssid:"Maison",pass:"demo"},{ssid:"Salle",pass:""}]);
@@ -725,6 +726,29 @@ function openReturn(){
   openSheet("Retour au look autonome",
     h("div",{class:"note"},"Quand le flux live (Pollux, midiPoulpy) s’arrête, les barres attendent ce délai puis reprennent leur look autonome."),
     kv("Délai",stepper(S.returnDelay,1,30,v=>v+" s",v=>{S.returnDelay=v;api("POST","/api/settings",{returnDelay:v}).catch(()=>{})})));
+}
+function artnetSummary(){
+  const a=S.artnet||{};
+  if(!a.on)return "Coupé";
+  if(a.suspended)return `Univers ${a.universe} · suspendu, un autre émetteur parle aux barres`;
+  if(a.receiving)return `Univers ${a.universe} · reçu de ${a.from} (${a.fps} images/s)`;
+  return `Univers ${a.universe} · en attente`;
+}
+function openArtnet(){
+  const a=S.artnet||(S.artnet={on:false,universe:0});
+  const ip=S.wifi.ap?"192.168.4.1":(S.wifi.ip||"poulpyled.local");
+  const send=patch=>api("POST","/api/settings",patch).catch(()=>toast("Passerelle injoignable"));
+  const segOff=h("button",{class:a.on?"":"on",onclick:()=>{a.on=false;segOff.classList.add("on");segOn.classList.remove("on");send({artnet:false})}},"Coupé");
+  const segOn=h("button",{class:a.on?"on":"",onclick:()=>{a.on=true;segOn.classList.add("on");segOff.classList.remove("on");send({artnet:true})}},"Actif");
+  openSheet("Nœud Art-Net",
+    h("div",{class:"note"},"La passerelle reçoit un univers Art-Net (Pollux ou une autre console) et le relaie aux barres. Pas besoin de PoulpyNode."),
+    kv("Relais",h("div",{class:"seg"},segOff,segOn)),
+    kv("Univers",stepper(a.universe,0,63,v=>String(v),v=>{a.universe=v;send({artnetUniverse:v})})),
+    kv("État",h("span",{},artnetSummary())),
+    h("div",{class:"note"},`Dans Pollux : Réglages → Sortie → Art-Net, Unicast vers ${ip}, même univers. `
+      +(S.wifi.ap?"Le PC doit être sur le Wi-Fi PoulpyLED.":"Le PC doit être sur le même Wi-Fi que la passerelle.")
+      +" Évitez le broadcast : en Wi-Fi il sature vite."),
+    h("div",{class:"note"},"Un seul émetteur à la fois : si un PoulpyNode ou un PoulpyLink parle déjà aux barres, la passerelle suspend son relais. Si la passerelle change, son adresse IP change aussi."));
 }
 function openChannel(){
   openSheet("Canal radio",
@@ -785,10 +809,10 @@ function openUpdate(onlyMac){
 }
 function openResetWifi(){
   openSheet("Réinitialiser (tests)",
-    h("div",{class:"note"},"Efface le Wi-Fi de la maison et la liste des réseaux mémorisés sur la passerelle et sur toutes les barres à portée. Les noms, scènes et groupes restent. La passerelle repasse sur le Wi-Fi PoulpyTube."),
+    h("div",{class:"note"},"Efface le Wi-Fi de la maison et la liste des réseaux mémorisés sur la passerelle et sur toutes les barres à portée. Les noms, scènes et groupes restent. La passerelle repasse sur le Wi-Fi PoulpyLED."),
     h("button",{class:"big danger",onclick:async()=>{
       if(!confirm("Oublier tous les Wi-Fi sur toutes les barres ?"))return;
-      try{await api("POST","/api/settings",{resetWifi:true});S.wifi.ssid="";S.wifi.ap=true;toast("Wi-Fi oubliés · point d’accès PoulpyTube");closeSheet()}
+      try{await api("POST","/api/settings",{resetWifi:true});S.wifi.ssid="";S.wifi.ap=true;toast("Wi-Fi oubliés · point d’accès PoulpyLED");closeSheet()}
       catch{toast("Passerelle injoignable")}}},"Tout oublier"),
     h("div",{class:"note"},"Option temporaire pour les essais. Une barre hors portée devra être remise à zéro plus tard (ou au prochain partage Wi-Fi)."));
 }

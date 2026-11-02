@@ -1,9 +1,9 @@
-// PoulpyTube — récepteur ESP-NOW pour ruban LED (Wemos D1 mini, ou ESP32 avec POULPY_ESP32_TUBE).
+// PoulpyLED (ex-PoulpyTube) — récepteur ESP-NOW pour ruban LED (Wemos D1 mini, ou ESP32 avec POULPY_ESP32_TUBE).
 //
 // Le tube reçoit un univers DMX de 512 canaux (4 blocs de 128) et des commandes.
 // Deux façons de lire l'univers :
-//   - flux « multifixture » (Pollux via PoulpyNode / PoulpyLink) : slot de 10 canaux
-//     à l'adresse du tube (multifixure.cpp) ;
+//   - flux « multifixture » (Pollux via PoulpyNode / PoulpyLink, ou l'Art-Net reçu par la
+//     passerelle, artnet.cpp) : slot de 10 canaux à l'adresse du tube (multifixure.cpp) ;
 //   - anciens modes : canal 1 = numéro de mode (legacy.cpp, led_modes.cpp).
 //
 // Règles : la réception radio ne fait que copier le bloc DMX ou mettre la commande
@@ -61,6 +61,7 @@ int setupAddress = 1;  // 0 = suit le groupe
 TubeSettings settings;
 static volatile bool multifixtureEnabled = false;
 static volatile unsigned long lastLiveMs = 0;  // dernier bloc DMX reçu, 0 = jamais
+static volatile unsigned long lastRadioLiveMs = 0;  // dernier bloc reçu par radio (pas l'Art-Net de la passerelle)
 static bool settingsDirty = false;
 static unsigned long settingsDirtyAt = 0;
 static volatile unsigned long lastMultifixureMs = 0;
@@ -143,6 +144,7 @@ void OnDataRecv(uint8_t* mac, uint8_t* incomingData, uint8_t len) {
 
   if (p->blockNumber >= 4) return;
   statsStreamPacketCount++;
+  lastRadioLiveMs = millis() | 1;
   if (remoteConfigActive) return;
 
   memcpy(&dmxChannels[p->blockNumber * 128], p->dmxvalues, 128);
@@ -586,6 +588,16 @@ void tubeSendTo(const uint8_t* mac, const struct_dmx_packet& p) {
   esp_now_send(target, (uint8_t*)&p, sizeof(struct_dmx_packet));
 }
 
+void tubeFeedLive(const uint8_t* dmx512) {
+  if (remoteConfigActive) return;
+  memcpy(dmxChannels, dmx512, 512);
+  multifixtureEnabled = true;
+  lastMultifixureMs = millis();
+  lastLiveMs = millis() | 1;
+}
+
+unsigned long tubeRadioLiveMs() { return lastRadioLiveMs; }
+
 bool tubeIsLive() {
   const unsigned long last = lastLiveMs;
   return last && millis() - last < settings.returnDelayS * 1000UL;
@@ -746,7 +758,7 @@ static void executeOTAUpdate() {
 void setup() {
   bootTime = millis();
   Serial.begin(115200);
-  Serial.printf("\nPoulpyTube %s\n", VERSION);
+  Serial.printf("\nPoulpyLED %s\n", VERSION);
 
   configBegin();
   ledCount = configLoadLedCount();

@@ -8,9 +8,10 @@
 
 #define EEPROM_SIZE 512
 #define ADDR_SETTINGS 256
-#define SETTINGS_VERSION 2
-// v1 = sans name (111 octets). v2 = + name[25].
+#define SETTINGS_VERSION 3
+// v1 = sans name (111 octets). v2 = + name[25] (136). v3 = + Art-Net.
 #define SETTINGS_V1_SIZE 111
+#define SETTINGS_V2_SIZE 136
 
 #define ADDR_ADDRESS 0
 #define ADDR_GROUP 8
@@ -142,24 +143,22 @@ void configLoadSettings(TubeSettings& s) {
   s.returnDelayS = DEFAULT_RETURN_DELAY_S;
   if (EEPROM.read(ADDR_SETTINGS) != 'P' || EEPROM.read(ADDR_SETTINGS + 1) != 'T') return;
   uint8_t ver = EEPROM.read(ADDR_SETTINGS + 2);
-  if (ver == SETTINGS_VERSION) {
-    uint8_t buf[sizeof(TubeSettings)];
-    for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
-    if (EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) != crc8(buf, sizeof(buf))) return;
-    memcpy(&s, buf, sizeof(s));
-  } else if (ver == 1) {
-    uint8_t buf[SETTINGS_V1_SIZE];
-    for (size_t i = 0; i < sizeof(buf); i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
-    if (EEPROM.read(ADDR_SETTINGS + 3 + sizeof(buf)) != crc8(buf, sizeof(buf))) return;
-    memcpy(&s, buf, SETTINGS_V1_SIZE);  // name reste vide
-  } else {
-    return;
-  }
+  // Une version plus ancienne est lue telle quelle : les champs ajoutés depuis restent à 0.
+  size_t n = ver == SETTINGS_VERSION ? sizeof(TubeSettings)
+           : ver == 2 ? SETTINGS_V2_SIZE
+           : ver == 1 ? SETTINGS_V1_SIZE : 0;
+  if (!n) return;
+  uint8_t buf[sizeof(TubeSettings)];
+  for (size_t i = 0; i < n; i++) buf[i] = EEPROM.read(ADDR_SETTINGS + 3 + i);
+  if (EEPROM.read(ADDR_SETTINGS + 3 + n) != crc8(buf, n)) return;
+  memcpy(&s, buf, n);
   s.wifiSsid[sizeof(s.wifiSsid) - 1] = '\0';
   s.wifiPass[sizeof(s.wifiPass) - 1] = '\0';
   s.name[sizeof(s.name) - 1] = '\0';
   if (s.returnDelayS < 1 || s.returnDelayS > 30) s.returnDelayS = DEFAULT_RETURN_DELAY_S;
   if (s.role > 1) s.role = 0;
+  if (s.artnet > 1) s.artnet = 0;
+  if (s.artnetUniverse > 32767) s.artnetUniverse = 0;
 }
 
 void configSaveSettings(const TubeSettings& s) {
