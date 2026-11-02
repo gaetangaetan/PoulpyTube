@@ -161,11 +161,11 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 
 | Méthode | Chemin | Rôle |
 |---|---|---|
-| GET | `/api/state` | groupes, looks, passerelle, Wi-Fi, version, `artnet` `{ on, universe, listening, receiving, suspended, fps, from }` |
+| GET | `/api/state` | `product: "PoulpyLED"`, groupes, looks, passerelle, Wi-Fi, version, `artnet` `{ on, universe, listening, receiving, suspended, fps, from }` (`universe` = numéro Art-Net ; l'app l'affiche + 1, comme le PoulpyNode) |
 | POST | `/api/look` | `{ "groups": [1,2] \| "mac": "…", "look": [10 octets], "fadeMs": 500 }` |
 | GET | `/api/tubes` | barres entendues |
 | POST | `/api/scan` | relance un scan |
-| POST | `/api/tube` | `{ "mac": "…", "name" \| "group" \| "address" \| "leds" \| "wattLimit" \| "identify" }` |
+| POST | `/api/tube` | `{ "mac": "…", "name" \| "group" \| "address" \| "leds" \| "wattLimit" \| "identify" \| "resetEnergy" }` |
 | GET | `/api/wifi/scan` | asynchrone : `{ "scanning": true }` puis `{ "scanning": false, "networks": [{ssid,rssi,channel,open}] }` |
 | GET | `/api/wifi/known` | réseaux mémorisés `[{ssid,pass}]` (≤ 8) |
 | GET | `/api/firmware/catalog` | catalogue HTTP (passerelle sur le Wi-Fi maison) : `{ ok, releases:[{version,date,note,url}] }` |
@@ -179,7 +179,7 @@ JSON sur HTTP, réponses immédiates : une requête ne fait qu'enregistrer la de
 | GET | `/api/backup` | tout (format `poulpytube.backup`) |
 | POST | `/api/backup` | `{ "backup", "tubes": true \| false }` : restaure |
 
-Même API envisageable plus tard sur PoulpyNode.
+Pollux (page Lampes) s'en sert quand ni PoulpyNode ni PoulpyLink ne répond : il trouve la passerelle (`poulpyled.local`, dernière IP, ArtPoll « PoulpyLED », `192.168.4.1`), lit `/api/tubes` (noms compris), écrit nom / groupe / adresse / LEDs / limite / `resetEnergy` / `identify` par `/api/tube`, passe l'OTA par `/api/ota`, et règle `artnet` + `artnetUniverse` sur l'univers de ses fixtures PoulpyLED (puis envoie ce flux à l'IP de la passerelle si elle ne le reçoit pas déjà).
 
 ## 8. Émetteurs
 

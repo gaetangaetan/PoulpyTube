@@ -844,6 +844,7 @@ void handleState() {
   JsonDocument doc;
   bool live = false;
   for (uint8_t i = 0; i < rowCount; i++) live |= rows[i].src == 1;
+  doc["product"] = "PoulpyLED";  // Pollux reconnaît la passerelle à ce champ
   doc["mode"] = live ? "live" : "auto";
   doc["fw"] = VERSION;
   JsonObject gw = doc["gateway"].to<JsonObject>();
@@ -1047,6 +1048,10 @@ void handleTube() {
     if (sameMac(rows[i].mac, mac)) row = &rows[i];
 
   if (doc["identify"] | false) queueCmd(IDENTIFY_CMD, mac, pl, 0);
+  if (doc["resetEnergy"] | false) {
+    queueCmd(RESET_ENERGY_CMD, mac, pl, 0);
+    if (row) row->mwh = 0;
+  }
   if (doc["name"].is<const char*>()) {
     const char* name = doc["name"].as<const char*>();
     char cleaned[TUBE_NAME_MAX + 1];

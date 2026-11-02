@@ -43,6 +43,7 @@ nav button.on{color:var(--accent)}
 .tile{position:relative;display:flex;flex-direction:column;justify-content:space-between;padding:10px;text-align:left;overflow:hidden;background:var(--panel)}
 .tile .n{font-size:22px;font-weight:700}
 .tile .meta{font-size:12px;color:var(--dim)}
+.tile .names{margin-top:4px;font-size:12px;line-height:1.3;color:var(--txt);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word}
 .tile canvas{position:absolute;left:0;right:0;bottom:0;width:100%;height:30%;display:block}
 .tile.all{border-color:var(--accent)}
 .tile.all .n{font-size:17px}
@@ -450,8 +451,10 @@ function renderGroups(){
   box.append(h("button",{class:"tile all",onclick:()=>openLook({all:true})},
     h("div",{class:"lbl"},h("div",{class:"n"},"Toutes"),h("div",{class:"meta"},S.tubes.length+" barres"))));
   for(const g of S.groups){
+    const names=S.tubes.filter(t=>t.group===g.n).map(tubeName).sort((a,b)=>a.localeCompare(b,"fr"));
     box.append(h("button",{class:"tile"+(g.count?"":" empty"),onclick:()=>openLook({group:g.n})},
-      h("div",{class:"lbl"},h("div",{class:"n"},"G"+g.n),h("div",{class:"meta"},LOOKS[lookIndex(g.look)]+" · "+g.count)),
+      h("div",{class:"lbl"},h("div",{class:"n"},"G"+g.n),h("div",{class:"meta"},LOOKS[lookIndex(g.look)]+" · "+g.count),
+        names.length?h("div",{class:"names"},names.join(" · ")):null),
       preview(()=>g.look)));
   }
 }
@@ -727,12 +730,14 @@ function openReturn(){
     h("div",{class:"note"},"Quand le flux live (Pollux, midiPoulpy) s’arrête, les barres attendent ce délai puis reprennent leur look autonome."),
     kv("Délai",stepper(S.returnDelay,1,30,v=>v+" s",v=>{S.returnDelay=v;api("POST","/api/settings",{returnDelay:v}).catch(()=>{})})));
 }
+// Univers montrés à partir de 1, comme le PoulpyNode ; l'API garde le numéro Art-Net (0 = univers 1).
+function universeText(wire){return `Univers ${(wire|0)+1} (Art-Net ${wire|0})`}
 function artnetSummary(){
   const a=S.artnet||{};
   if(!a.on)return "Coupé";
-  if(a.suspended)return `Univers ${a.universe} · suspendu, un autre émetteur parle aux barres`;
-  if(a.receiving)return `Univers ${a.universe} · reçu de ${a.from} (${a.fps} images/s)`;
-  return `Univers ${a.universe} · en attente`;
+  if(a.suspended)return `${universeText(a.universe)} · suspendu, un autre émetteur parle aux barres`;
+  if(a.receiving)return `${universeText(a.universe)} · reçu de ${a.from} (${a.fps} images/s)`;
+  return `${universeText(a.universe)} · en attente`;
 }
 function openArtnet(){
   const a=S.artnet||(S.artnet={on:false,universe:0});
@@ -743,9 +748,10 @@ function openArtnet(){
   openSheet("Nœud Art-Net",
     h("div",{class:"note"},"La passerelle reçoit un univers Art-Net (Pollux ou une autre console) et le relaie aux barres. Pas besoin de PoulpyNode."),
     kv("Relais",h("div",{class:"seg"},segOff,segOn)),
-    kv("Univers",stepper(a.universe,0,63,v=>String(v),v=>{a.universe=v;send({artnetUniverse:v})})),
+    kv("Univers",stepper((a.universe|0)+1,1,64,v=>`${v} · Art-Net ${v-1}`,v=>{a.universe=v-1;send({artnetUniverse:v-1})})),
     kv("État",h("span",{},artnetSummary())),
-    h("div",{class:"note"},`Dans Pollux : Réglages → Sortie → Art-Net, Unicast vers ${ip}, même univers. `
+    h("div",{class:"note"},"Pollux règle la passerelle tout seul quand elle sert de radio à sa page Lampes : univers de ses fixtures PoulpyLED, flux envoyé à cette passerelle. "
+      +`À la main : Art-Net, Unicast vers ${ip}, même numéro Art-Net. `
       +(S.wifi.ap?"Le PC doit être sur le Wi-Fi PoulpyLED.":"Le PC doit être sur le même Wi-Fi que la passerelle.")
       +" Évitez le broadcast : en Wi-Fi il sature vite."),
     h("div",{class:"note"},"Un seul émetteur à la fois : si un PoulpyNode ou un PoulpyLink parle déjà aux barres, la passerelle suspend son relais. Si la passerelle change, son adresse IP change aussi."));
