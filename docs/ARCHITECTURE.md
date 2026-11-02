@@ -134,7 +134,7 @@ Détail octet par octet : `src/protocol.h`. PoulpyNode ignore ces commandes.
 
 ### Onglets (maquette validée : `web/index.html`)
 
-1. **Jouer** : les groupes en grandes tuiles avec aperçu animé, plus une tuile « Toutes ». Toucher un groupe ouvre un panneau : 12 couleurs, teinte, intensité, look, vitesse, largeur.
+1. **Jouer** : les groupes en grandes tuiles avec aperçu animé, plus une tuile « Toutes ». Chaque tuile liste **toutes** les barres du groupe, une par ligne (la bande de couleur reste en bas et ne les cache pas). Toucher un groupe ouvre un panneau : 12 couleurs, teinte, intensité, look, vitesse, largeur. Le titre du panneau reprend les mêmes noms.
 2. **Scènes** : 20 emplacements. Toucher = rappeler (ou enregistrer si vide), appui long = renommer, fondu, remplacer, effacer.
 3. **Barres** : liste des barres trouvées (nom si donné, sinon fin de MAC). Toucher = réglages (nom, clignoter, groupe, adresse, LEDs, limite, look, passerelle). Appui long (~1 s) = faire clignoter sans ouvrir le panneau.
 4. **Réglages** : Wi-Fi de la maison (scan des SSID, liste des réseaux mémorisés, un Wi-Fi actif partagé aux barres), passerelle, délai de retour du live, canal, sauvegarde, **mises à jour** (catalogue + OTA depuis le téléphone, même flux `0xFA` que Pollux / PoulpyNode).
